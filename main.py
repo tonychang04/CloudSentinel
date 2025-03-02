@@ -37,6 +37,60 @@ recent_events = []
 # Demo mode flag - set to True to use mock data instead of real AWS
 DEMO_MODE = os.environ.get('DEMO_MODE', 'True').lower() == 'true'
 
+# AWS Configuration
+def get_aws_client(service):
+    """Create and return a boto3 client for the specified AWS service."""
+    if DEMO_MODE:
+        # Return a mock client for demo mode
+        return MockAWSClient(service)
+    
+    return boto3.client(
+        service,
+        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+        region_name=os.environ.get('AWS_REGION', 'us-east-1')
+    )
+
+# Log Fetching Module
+def fetch_cloudwatch_logs(log_group_name, start_time=None, end_time=None, filter_pattern=None):
+    """
+    Fetch logs from CloudWatch based on specified parameters.
+    
+    Args:
+        log_group_name (str): The name of the CloudWatch Log Group
+        start_time (datetime, optional): Start time for log query
+        end_time (datetime, optional): End time for log query
+        filter_pattern (str, optional): CloudWatch Logs filter pattern
+        
+    Returns:
+        list: List of log events
+    """
+    logs_client = get_aws_client('logs')
+    
+    # Convert datetime objects to milliseconds since epoch if provided
+    kwargs = {'logGroupName': log_group_name}
+    
+    if start_time:
+        kwargs['startTime'] = int(start_time.timestamp() * 1000)
+    
+    if end_time:
+        kwargs['endTime'] = int(end_time.timestamp() * 1000)
+    
+    if filter_pattern:
+        kwargs['filterPattern'] = filter_pattern
+    
+    response = logs_client.filter_log_events(**kwargs)
+    
+    events = response.get('events', [])
+    
+    # Handle pagination if there are more logs
+    while 'nextToken' in response and not DEMO_MODE:
+        kwargs['nextToken'] = response['nextToken']
+        response = logs_client.filter_log_events(**kwargs)
+        events.extend(response.get('events', []))
+    
+    return events
+
 # Log Parsing & Threat Analysis
 def parse_log_entry(log_entry):
     """
@@ -362,7 +416,7 @@ def get_dashboard_data():
     except Exception as e:
         logger.error(f"Error in dashboard API: {str(e)}")
         return jsonify({'error': str(e), 'message': 'Failed to fetch dashboard data'}), 500
-
+    
 # Background monitoring thread
 def background_monitor():
     """Background thread that periodically checks for new logs and analyzes them."""

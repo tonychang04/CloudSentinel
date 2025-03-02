@@ -63,20 +63,6 @@ export const blockIp = async (ipAddress) => {
   }
 };
 
-export const resetDemo = async () => {
-  try {
-    const response = await fetch('/api/demo/reset', {
-      method: 'POST',
-    });
-    if (!response.ok) {
-      throw new Error(`HTTP error! Status: ${response.status}`);
-    }
-    return await response.json();
-  } catch (error) {
-    console.error('Error resetting demo:', error);
-    throw error;
-  }
-};
 
 // Define a consistent color mapping function for risk levels
 const getRiskLevelColor = (riskLevel) => {
@@ -88,7 +74,7 @@ const getRiskLevelColor = (riskLevel) => {
     case 'low':
       return 'primary'; 
     case 'blocked':
-      return 'dark';    // Black
+      return 'purple';    
     case 'info':
     default:
       return 'success'; // Green

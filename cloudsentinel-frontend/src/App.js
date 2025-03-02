@@ -5,9 +5,87 @@ import 'bootstrap/dist/css/bootstrap.min.css';
 import 'bootstrap-icons/font/bootstrap-icons.css';
 import './App.css';
 
+// Move these exports to the top level
+export const fetchDashboardData = async () => {
+  try {
+    console.log("Fetching dashboard data...");
+    const response = await fetch('/api/dashboard');
+    console.log("Dashboard response status:", response.status);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("Error response:", errorText);
+      throw new Error(`HTTP error! Status: ${response.status}, Details: ${errorText}`);
+    }
+    
+    const data = await response.json();
+    console.log("Dashboard data received:", data);
+    return data;
+  } catch (error) {
+    console.error('Error fetching dashboard data:', error);
+    throw error;
+  }
+};
+
+export const fetchLogs = async (filterPattern = '') => {
+  try {
+    const response = await fetch('/api/logs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ filter_pattern: filterPattern }),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP error! Status: ${response.status}`);
+    }
+    return await response.json();
+  } catch (error) {
+    console.error('Error fetching logs:', error);
+    throw error;
+  }
+};
+
+export const blockIp = async (ipAddress) => {
+  try {
+    const response = await fetch('/api/prevent', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ ip_address: ipAddress }),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP error! Status: ${response.status}`);
+    }
+    return await response.json();
+  } catch (error) {
+    console.error('Error blocking IP:', error);
+    throw error;
+  }
+};
+
+export const resetDemo = async () => {
+  try {
+    const response = await fetch('/api/demo/reset', {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP error! Status: ${response.status}`);
+    }
+    return await response.json();
+  } catch (error) {
+    console.error('Error resetting demo:', error);
+    throw error;
+  }
+};
+
 function App() {
-  // State variables
-  const [loading, setLoading] = useState(false);
+  // Separate loading states for different operations
+  const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [dashboardData, setDashboardData] = useState({
     threat_stats: { high: 0, medium: 0, low: 0, info: 0 },
     blocked_ips: [],
@@ -22,104 +100,111 @@ function App() {
   const [logs, setLogs] = useState([]);
   const [lastUpdated, setLastUpdated] = useState('Never');
 
-  // Fetch dashboard data
-  const fetchDashboard = async () => {
-    setLoading(true);
-    try {
-      const response = await axios.get('/api/dashboard');
-      setDashboardData(response.data);
-      setLastUpdated(new Date().toLocaleString());
-    } catch (error) {
-      console.error('Error fetching dashboard:', error);
-      alert(error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Block IP
-  const handleBlockIP = async () => {
-    if (!ipToBlock) {
-      alert('Please enter an IP address');
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const response = await axios.post('/api/prevent', {
-        ip_address: ipToBlock,
-        description: blockReason
-      });
-
-      if (response.data.success) {
-        alert(`Successfully blocked IP: ${ipToBlock}`);
-        setShowBlockModal(false);
-        setIpToBlock('');
-        setBlockReason('');
-        fetchDashboard();
-      } else {
-        alert(`Failed to block IP: ${response.data.message}`);
-      }
-    } catch (error) {
-      console.error('Error blocking IP:', error);
-      alert('Failed to block IP');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Fetch logs
-  const fetchLogs = async () => {
-    setLoading(true);
-    try {
-      const response = await axios.post('/api/logs', {
-        filter_pattern: logFilter
-      });
-      setLogs(response.data.analysis_results || []);
-      fetchDashboard();
-    } catch (error) {
-      console.error('Error fetching logs:', error);
-      alert('Failed to fetch logs');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Reset demo
-  const resetDemo = async () => {
-    setLoading(true);
-    try {
-      const response = await axios.post('/api/demo/reset');
-      if (response.data.success) {
-        alert('Demo data reset successfully');
-        fetchDashboard();
-      } else {
-        alert('Failed to reset demo data');
-      }
-    } catch (error) {
-      console.error('Error resetting demo:', error);
-      alert('Failed to reset demo');
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Add a specific state for refresh animation
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Format date
   const formatDate = (dateString) => {
     return new Date(dateString).toLocaleString();
   };
 
+  // Update the fetchDashboard function
+  const fetchDashboard = async (isInitialLoad = false) => {
+    try {
+      // Set refreshing state instead of dashboardLoading for manual refreshes
+      if (!isInitialLoad) {
+        setIsRefreshing(true);
+      } else {
+        setDashboardLoading(true);
+      }
+      
+      const data = await fetchDashboardData();
+      
+      // Use a function to update state to avoid race conditions
+      setDashboardData(prevData => ({
+        ...prevData,
+        threat_stats: data.threat_stats || prevData.threat_stats,
+        blocked_ips: data.blocked_ips || prevData.blocked_ips,
+        recent_events: data.recent_events || prevData.recent_events,
+        total_logs_analyzed: data.total_logs_analyzed || prevData.total_logs_analyzed
+      }));
+      
+      setLastUpdated(new Date().toLocaleString());
+    } catch (error) {
+      console.error('Error fetching dashboard:', error);
+    } finally {
+      setIsRefreshing(false);
+      setDashboardLoading(false);
+      if (isInitialLoad) {
+        setInitialLoading(false);
+      }
+    }
+  };
+
+  // Update handleFetchLogs to use logsLoading
+  const handleFetchLogs = async () => {
+    try {
+      setLogsLoading(true);
+      const data = await fetchLogs(logFilter);
+      console.log("Logs data received:", data);
+      
+      if (data.analysis_results) {
+        setLogs(data.analysis_results);
+      } else {
+        setLogs([]);
+        console.error("No analysis_results in response:", data);
+      }
+    } catch (error) {
+      console.error('Error fetching logs:', error);
+      setLogs([]);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
+  // Update handleBlockIP to use actionLoading
+  const handleBlockIP = async () => {
+    if (!ipToBlock) return;
+    
+    try {
+      setActionLoading(true);
+      await blockIp(ipToBlock);
+      setShowBlockModal(false);
+      setIpToBlock('');
+      setBlockReason('');
+      fetchDashboard(); // Refresh dashboard after blocking
+    } catch (error) {
+      console.error('Error blocking IP:', error);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   // Initialize dashboard on component mount
   useEffect(() => {
-    fetchDashboard();
+    // Pass true to indicate this is the initial load
+    fetchDashboard(true);
+    
     // Set up auto-refresh every 30 seconds
-    const interval = setInterval(fetchDashboard, 30000);
+    const interval = setInterval(() => fetchDashboard(false), 30000);
     return () => clearInterval(interval);
   }, []);
 
+  // Show a loading spinner during initial load
+  if (initialLoading) {
+    return (
+      <div className="loading-container">
+        <Spinner animation="border" role="status" variant="primary">
+          <span className="visually-hidden">Loading...</span>
+        </Spinner>
+        <p className="mt-2">Loading CloudSentinel...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="app-container">
-      {loading && (
+      {dashboardLoading && (
         <div className="loading-overlay">
           <Spinner animation="border" variant="light" className="loading-spinner" />
         </div>
@@ -151,7 +236,15 @@ function App() {
             <Card>
               <Card.Header className="d-flex justify-content-between align-items-center">
                 <span>Security Overview</span>
-                <i className="bi bi-arrow-repeat refresh-btn" onClick={fetchDashboard} title="Refresh Dashboard"></i>
+                <Button 
+                  variant="outline-secondary" 
+                  size="sm" 
+                  onClick={() => fetchDashboard(false)}
+                  disabled={isRefreshing}
+                  className="refresh-button"
+                >
+                  <i className={`bi bi-arrow-clockwise ${isRefreshing ? 'rotating' : ''}`}></i> Refresh
+                </Button>
               </Card.Header>
               <Card.Body>
                 <Row>
@@ -297,8 +390,19 @@ function App() {
           <Button variant="secondary" onClick={() => setShowBlockModal(false)}>
             Cancel
           </Button>
-          <Button variant="danger" onClick={handleBlockIP}>
-            Block IP
+          <Button 
+            variant="danger" 
+            onClick={handleBlockIP}
+            disabled={actionLoading}
+          >
+            {actionLoading ? (
+              <>
+                <Spinner as="span" animation="border" size="sm" role="status" aria-hidden="true" />
+                <span className="ms-1">Blocking...</span>
+              </>
+            ) : (
+              'Block IP'
+            )}
           </Button>
         </Modal.Footer>
       </Modal>
@@ -319,53 +423,61 @@ function App() {
                   value={logFilter}
                   onChange={(e) => setLogFilter(e.target.value)}
                 />
-                <Button variant="primary" onClick={fetchLogs}>
+                <Button variant="primary" onClick={handleFetchLogs}>
                   Apply
                 </Button>
               </div>
             </Col>
             <Col md={6} className="text-end">
-              <Button variant="secondary" onClick={fetchLogs}>
+              <Button variant="secondary" onClick={handleFetchLogs}>
                 <i className="bi bi-cloud-download"></i> Fetch New Logs
               </Button>
             </Col>
           </Row>
-          <Table responsive hover size="sm">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>IP Address</th>
-                <th>User</th>
-                <th>Risk</th>
-                <th>Message</th>
-              </tr>
-            </thead>
-            <tbody>
-              {logs.length > 0 ? (
-                logs.map((result) => (
-                  <tr key={result.id}>
-                    <td>{result.log_data.timestamp || 'N/A'}</td>
-                    <td>{result.log_data.ip_address || 'N/A'}</td>
-                    <td>{result.log_data.user || 'N/A'}</td>
-                    <td>
-                      <Badge bg={
-                        result.risk_level === 'high' ? 'danger' :
-                        result.risk_level === 'medium' ? 'warning' :
-                        result.risk_level === 'low' ? 'info' : 'secondary'
-                      }>
-                        {result.risk_level.toUpperCase()}
-                      </Badge>
-                    </td>
-                    <td>{result.log_data.message}</td>
-                  </tr>
-                ))
-              ) : (
+          {logsLoading ? (
+            <div className="text-center p-4">
+              <Spinner animation="border" role="status">
+                <span className="visually-hidden">Loading...</span>
+              </Spinner>
+            </div>
+          ) : (
+            <Table responsive hover size="sm">
+              <thead>
                 <tr>
-                  <td colSpan="5" className="text-center">No logs to display</td>
+                  <th>Time</th>
+                  <th>IP Address</th>
+                  <th>User</th>
+                  <th>Risk</th>
+                  <th>Message</th>
                 </tr>
-              )}
-            </tbody>
-          </Table>
+              </thead>
+              <tbody>
+                {logs.length > 0 ? (
+                  logs.map((result) => (
+                    <tr key={result.id}>
+                      <td>{result.log_data.timestamp || 'N/A'}</td>
+                      <td>{result.log_data.ip_address || 'N/A'}</td>
+                      <td>{result.log_data.user || 'N/A'}</td>
+                      <td>
+                        <Badge bg={
+                          result.risk_level === 'high' ? 'danger' :
+                          result.risk_level === 'medium' ? 'warning' :
+                          result.risk_level === 'low' ? 'info' : 'secondary'
+                        }>
+                          {result.risk_level.toUpperCase()}
+                        </Badge>
+                      </td>
+                      <td>{result.log_data.message}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan="5" className="text-center">No logs to display</td>
+                  </tr>
+                )}
+              </tbody>
+            </Table>
+          )}
         </Modal.Body>
         <Modal.Footer>
           <Button variant="secondary" onClick={() => setShowLogsModal(false)}>

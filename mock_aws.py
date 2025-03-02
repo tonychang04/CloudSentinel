@@ -76,7 +76,7 @@ class MockAWSClient:
             "[{timestamp}] File {file} accessed by {user} from {ip}",
             "[{timestamp}] System update completed successfully by {user}",
             "[{timestamp}] Configuration change by {user} from {ip}",
-            "[{timestamp}] Database backup completed successfully",
+            "[{timestamp}] Database backup completed successfully by {user}",
             
             # Low risk logs
             "[{timestamp}] Failed login attempt for user {user} from {ip}",
@@ -105,17 +105,32 @@ class MockAWSClient:
         # Generate normal logs (60%)
         for i in range(60):
             timestamp = now - timedelta(minutes=i*5)
-            template = log_templates[i % 5]  # Use templates 0-4 (normal)
+            template_index = i % 5  # Use templates 0-4 (normal)
+            template = log_templates[template_index]
             ip = ips[i % len(ips)]
             user = users[i % len(users)]
             file = files[i % len(files)]
             
-            message = template.format(
-                timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-                user=user,
-                ip=ip,
-                file=file
-            )
+            # Format the message with available placeholders
+            try:
+                # Check which template we're using and format accordingly
+                if template_index == 1:  # This is the template with file
+                    message = template.format(
+                        timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                        user=user,
+                        ip=ip,
+                        file=file
+                    )
+                else:  # Other templates don't have file
+                    message = template.format(
+                        timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                        user=user,
+                        ip=ip
+                    )
+            except KeyError as e:
+                # If there's a missing key, use a fallback message
+                logger.error(f"Error formatting log template: {template}, Error: {e}")
+                message = f"[{timestamp.strftime('%Y-%m-%d %H:%M:%S')}] System log entry from {ip}"
             
             logs.append({
                 'eventId': f'event-{uuid.uuid4().hex}',
@@ -131,11 +146,15 @@ class MockAWSClient:
             ip = ips[i % len(ips)]
             user = users[i % len(users)]
             
-            message = template.format(
-                timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-                user=user,
-                ip=ip
-            )
+            try:
+                message = template.format(
+                    timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                    user=user,
+                    ip=ip
+                )
+            except KeyError as e:
+                logger.error(f"Error formatting log template: {template}, Error: {e}")
+                message = f"[{timestamp.strftime('%Y-%m-%d %H:%M:%S')}] Failed login from {ip}"
             
             logs.append({
                 'eventId': f'event-{uuid.uuid4().hex}',
@@ -151,11 +170,15 @@ class MockAWSClient:
             ip = ips[i % len(ips)]
             user = users[i % len(users)]
             
-            message = template.format(
-                timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-                user=user,
-                ip=ip
-            )
+            try:
+                message = template.format(
+                    timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                    user=user,
+                    ip=ip
+                )
+            except KeyError as e:
+                logger.error(f"Error formatting log template: {template}, Error: {e}")
+                message = f"[{timestamp.strftime('%Y-%m-%d %H:%M:%S')}] Suspicious activity from {ip}"
             
             logs.append({
                 'eventId': f'event-{uuid.uuid4().hex}',
@@ -167,15 +190,34 @@ class MockAWSClient:
         # Generate high risk logs (5%)
         for i in range(5):
             timestamp = now - timedelta(minutes=i*30)
-            template = log_templates[13 + (i % 5)]  # Use templates 13-17 (high risk)
+            template_index = 13 + (i % 5)  # Use templates 13-17 (high risk)
+            template = log_templates[template_index]
             ip = malicious_ips[i % len(malicious_ips)]
             user = users[i % len(users)]
+            file = files[i % len(files)]
             
-            message = template.format(
-                timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-                user=user,
-                ip=ip
-            )
+            try:
+                # Check if this is the template with file (index 14)
+                if template_index == 14:  # This is the template with file
+                    message = template.format(
+                        timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                        ip=ip,
+                        file=file
+                    )
+                elif '{user}' in template:  # Template with user
+                    message = template.format(
+                        timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                        user=user,
+                        ip=ip
+                    )
+                else:  # Template with just IP
+                    message = template.format(
+                        timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                        ip=ip
+                    )
+            except KeyError as e:
+                logger.error(f"Error formatting log template: {template}, Error: {e}")
+                message = f"[{timestamp.strftime('%Y-%m-%d %H:%M:%S')}] Security alert from {ip}"
             
             logs.append({
                 'eventId': f'event-{uuid.uuid4().hex}',

@@ -89,4 +89,36 @@
 
 .event-table {
   font-size: 0.9rem;
+}
+
+/* Add these styles to prevent flashing */
+.fade-transition {
+  transition: opacity 0.2s ease-in-out;
+}
+
+.dashboard-card {
+  min-height: 200px; /* Set minimum heights for cards to prevent layout shifts */
+}
+
+.events-card {
+  min-height: 400px;
+}
+
+/* Ensure content doesn't jump during loading */
+.content-wrapper {
+  position: relative;
+  min-height: 100px;
+}
+
+.loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(255, 255, 255, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
 } 

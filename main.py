@@ -275,48 +275,14 @@ def block_ip_in_security_group(ip_address, security_group_id, description=None):
             'security_group_id': security_group_id
         }
 
-# Background monitoring thread
-def background_monitor():
-    """Background thread that periodically checks for new logs and analyzes them."""
-    while True:
-        try:
-            # In a real implementation, this would fetch new logs from CloudWatch
-            # For demo purposes, we'll just analyze a random subset of our demo logs
-            if DEMO_MODE and demo_logs:
-                # Get a random subset of logs
-                import random
-                sample_size = min(5, len(demo_logs))
-                sample_logs = random.sample(demo_logs, sample_size)
-                
-                # Analyze the logs
-                for log in sample_logs:
-                    parsed_log = parse_log_entry(log)
-                    analysis = analyze_threat(parsed_log)
-                    
-                    # Add to analysis history
-                    analysis_history.append(analysis)
-                    
-                    # Auto-block high risk IPs
-                    if analysis['risk_level'] == 'high' and analysis['log_data'].get('ip_address'):
-                        ip = analysis['log_data']['ip_address']
-                        if ip not in blocked_ips:
-                            block_ip_in_security_group(ip, 'sg-demo', 'Auto-blocked high risk IP')
-            
-            # Sleep for a while before the next check
-            time.sleep(30)
-        except Exception as e:
-            logger.error(f"Error in background monitor: {str(e)}")
-            time.sleep(60)  # Sleep longer on error
-
-
 @app.route('/api/logs', methods=['POST'])
 def process_logs():
     """API endpoint to fetch and analyze logs."""
-    global recent_events
-    
     try:
         data = request.json or {}
         filter_pattern = data.get('filter_pattern', '')
+        
+        logger.info(f"Log analysis API called with filter: {filter_pattern}")
         
         # Get logs from mock AWS client
         logs_client = get_aws_client('logs')
@@ -325,72 +291,61 @@ def process_logs():
             filterPattern=filter_pattern
         )
         
-        # Process the logs
-        results = []
+        # Process logs
+        analysis_results = []
         for event in response.get('events', []):
-            # Extract data from log message
             message = event.get('message', '')
-            
-            # Determine risk level based on message content
-            risk_level = 'info'
-            if 'brute force' in message.lower() or 'security breach' in message.lower() or 'malicious' in message.lower():
-                risk_level = 'high'
-                threat_stats['high'] += 1
-            elif 'multiple failed' in message.lower() or 'suspicious' in message.lower() or 'unusual' in message.lower():
-                risk_level = 'medium'
-                threat_stats['medium'] += 1
-            elif 'failed' in message.lower() or 'denied' in message.lower() or 'invalid' in message.lower():
-                risk_level = 'low'
-                threat_stats['low'] += 1
-            else:
-                threat_stats['info'] += 1
-            
-            # Extract IP address using regex
-            ip_match = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', message)
-            ip_address = ip_match.group(0) if ip_match else None
             
             # Extract timestamp
             timestamp_match = re.search(r'\[(.*?)\]', message)
-            timestamp = timestamp_match.group(1) if timestamp_match else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            timestamp = timestamp_match.group(1) if timestamp_match else None
             
-            # Extract user
+            # Extract IP address
+            ip_match = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', message)
+            ip_address = ip_match.group(0) if ip_match else None
+            
+            # Extract username
             user_match = re.search(r'user (\w+\.?\w*)', message, re.IGNORECASE)
             user = user_match.group(1) if user_match else None
             
-            # Create log data object
-            log_data = {
-                'timestamp': timestamp,
-                'ip_address': ip_address,
-                'user': user,
-                'message': message
-            }
+            # Determine risk level
+            if 'brute force' in message.lower() or 'security breach' in message.lower() or 'malicious' in message.lower():
+                risk_level = 'high'
+            elif 'multiple failed' in message.lower() or 'suspicious' in message.lower() or 'unusual' in message.lower():
+                risk_level = 'medium'
+            elif 'failed' in message.lower() or 'denied' in message.lower() or 'invalid' in message.lower():
+                risk_level = 'low'
+            else:
+                risk_level = 'info'
             
-            # Create result object
-            result = {
+            # Create analysis result
+            analysis_result = {
                 'id': str(uuid.uuid4()),
-                'risk_level': risk_level,
-                'detected_threats': ['Suspicious Activity'],
-                'log_data': log_data
+                'log_data': {
+                    'timestamp': timestamp,
+                    'ip_address': ip_address,
+                    'user': user,
+                    'message': message
+                },
+                'risk_level': risk_level
             }
             
-            results.append(result)
-            
-            # Add to recent events if not info level
-            if risk_level != 'info' and ip_address:
-                recent_events.append({
-                    'id': result['id'],
-                    'timestamp': timestamp,
-                    'message': message,
-                    'ip': ip_address,
-                    'risk_level': risk_level
-                })
+            analysis_results.append(analysis_result)
         
-        # Keep only the 10 most recent events
-        recent_events = recent_events[-10:]
+        # Add to analysis history
+        analysis_history.extend(analysis_results)
+        
+        # Keep only the most recent 100 analysis results
+        if len(analysis_history) > 100:
+            analysis_history = analysis_history[-100:]
+        
+        logger.info(f"Log analysis complete. Found {len(analysis_results)} results.")
         
         return jsonify({
-            'log_count': len(results),
-            'analysis_results': results
+            'success': True,
+            'analysis_results': analysis_results,
+            'total_logs': len(response.get('events', [])),
+            'filter_pattern': filter_pattern
         })
     except Exception as e:
         logger.error(f"Error in logs API: {str(e)}")
@@ -499,6 +454,41 @@ def reset_demo():
         logger.error(f"Error in reset API: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+
+# Background monitoring thread
+def background_monitor():
+    """Background thread that periodically checks for new logs and analyzes them."""
+    while True:
+        try:
+            # In a real implementation, this would fetch new logs from CloudWatch
+            # For demo purposes, we'll just analyze a random subset of our demo logs
+            if DEMO_MODE and demo_logs:
+                # Get a random subset of logs
+                import random
+                sample_size = min(5, len(demo_logs))
+                sample_logs = random.sample(demo_logs, sample_size)
+                
+                # Analyze the logs
+                for log in sample_logs:
+                    parsed_log = parse_log_entry(log)
+                    analysis = analyze_threat(parsed_log)
+                    
+                    # Add to analysis history
+                    analysis_history.append(analysis)
+                    
+                    # Auto-block high risk IPs
+                    if analysis['risk_level'] == 'high' and analysis['log_data'].get('ip_address'):
+                        ip = analysis['log_data']['ip_address']
+                        if ip not in blocked_ips:
+                            block_ip_in_security_group(ip, 'sg-demo', 'Auto-blocked high risk IP')
+            
+            # Sleep for a while before the next check
+            time.sleep(30)
+        except Exception as e:
+            logger.error(f"Error in background monitor: {str(e)}")
+            time.sleep(60)  # Sleep longer on error
+
+
 # Start the background monitoring thread when the app starts
 @app.before_first_request
 def start_background_tasks():
@@ -508,16 +498,117 @@ def start_background_tasks():
         thread.daemon = True
         thread.start()
 
-@app.route('/', defaults={'path': ''})
-@app.route('/<path:path>')
-def serve(path):
-    if path.startswith('api/'):
-        # Let the API routes handle API requests
-        return jsonify({'error': 'API endpoint not found'}), 404
-    elif path != "" and os.path.exists(os.path.join('build', path)):
-        return send_from_directory('build', path)
-    else:
-        return send_from_directory('build', 'index.html')
+# Background thread for generating new logs
+def background_log_generator():
+    """Background thread that periodically generates new logs."""
+    global recent_events, threat_stats
+    
+    logger.info("Starting background log generator thread")
+    
+    while True:
+        try:
+            # Sleep for a random interval (5-15 seconds)
+            sleep_time = random.randint(5, 15)
+            time.sleep(sleep_time)
+            
+            # Generate a new log event
+            risk_levels = ['high', 'medium', 'low', 'info']
+            weights = [0.1, 0.2, 0.3, 0.4]  # 10% high, 20% medium, 30% low, 40% info
+            risk_level = random.choices(risk_levels, weights=weights)[0]
+            
+            # Update threat stats
+            threat_stats[risk_level] += 1
+            
+            # Skip adding info events to recent_events
+            if risk_level == 'info':
+                continue
+                
+            # Generate IP address
+            ip_octets = [str(random.randint(1, 255)) for _ in range(4)]
+            ip = '.'.join(ip_octets)
+            
+            # Generate username
+            usernames = ['admin', 'john.doe', 'jane.smith', 'system', 'root', 'guest']
+            user = random.choice(usernames)
+            
+            # Generate message based on risk level
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            if risk_level == 'high':
+                messages = [
+                    f"[{timestamp}] Possible brute force attack detected from {ip}",
+                    f"[{timestamp}] Unauthorized access to sensitive file /etc/passwd from {ip}",
+                    f"[{timestamp}] Malicious script execution detected from {ip}",
+                    f"[{timestamp}] Security breach detected for user {user} from {ip}"
+                ]
+            elif risk_level == 'medium':
+                messages = [
+                    f"[{timestamp}] Multiple failed login attempts for user {user} from {ip}",
+                    f"[{timestamp}] Unusual file access pattern detected from {ip}",
+                    f"[{timestamp}] Suspicious command execution by {user} from {ip}",
+                    f"[{timestamp}] Unexpected system configuration change from {ip}"
+                ]
+            else:  # low
+                messages = [
+                    f"[{timestamp}] Failed login attempt for user {user} from {ip}",
+                    f"[{timestamp}] Permission denied for {user} from {ip}",
+                    f"[{timestamp}] Invalid password for {user} from {ip}",
+                    f"[{timestamp}] File not found error reported by {user}"
+                ]
+                
+            message = random.choice(messages)
+            
+            # Create event
+            event = {
+                'id': str(uuid.uuid4()),
+                'timestamp': timestamp,
+                'message': message,
+                'ip': ip,
+                'risk_level': risk_level
+            }
+            
+            # Add to recent events
+            recent_events.append(event)
+            
+            # Keep only the most recent 20 events
+            if len(recent_events) > 20:
+                recent_events = recent_events[-20:]
+                
+            logger.info(f"Generated new {risk_level} risk event: {message}")
+            
+            # Randomly block IPs for high risk events (20% chance)
+            if risk_level == 'high' and random.random() < 0.2:
+                blocked_ips.add(ip)
+                logger.info(f"Automatically blocked IP: {ip}")
+                
+                # Add blocking event
+                block_event = {
+                    'id': str(uuid.uuid4()),
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'message': f"IP {ip} automatically blocked due to high risk activity",
+                    'ip': ip,
+                    'risk_level': 'blocked'
+                }
+                recent_events.append(block_event)
+                
+                # Keep only the most recent 20 events
+                if len(recent_events) > 20:
+                    recent_events = recent_events[-20:]
+            
+        except Exception as e:
+            logger.error(f"Error in background log generator: {str(e)}")
+            time.sleep(30)  # Sleep longer on error
+
+# Start the background thread when the app starts
+@app.before_first_request
+def start_background_threads():
+    """Start background threads before the first request is processed."""
+    
+    # Start background log generator
+    log_thread = threading.Thread(target=background_log_generator)
+    log_thread.daemon = True
+    log_thread.start()
+    logger.info("Background threads started")
 
 if __name__ == '__main__':
     # Try a different port if 5000 is in use

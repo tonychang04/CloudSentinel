@@ -44,14 +44,18 @@ export const fetchLogs = async (filterPattern = '') => {
   }
 };
 
-export const blockIp = async (ipAddress) => {
+export const blockIp = async (ipAddress, reason) => {
   try {
     const response = await fetch('/api/prevent', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ ip_address: ipAddress }),
+      body: JSON.stringify({ 
+        ip_address: ipAddress,
+        action: 'block_ip',
+        reason: reason
+      }),
     });
     if (!response.ok) {
       throw new Error(`HTTP error! Status: ${response.status}`);
@@ -167,12 +171,12 @@ function App() {
   };
 
   // Update handleBlockIP to use actionLoading
-  const handleBlockIP = async () => {
-    if (!ipToBlock) return;
+  const handleBlockIP = async (ipAddress, reason) => {
+    if (!ipAddress) return;
     
     try {
       setActionLoading(true);
-      await blockIp(ipToBlock);
+      await blockIp(ipAddress, reason);
       setShowBlockModal(false);
       setIpToBlock('');
       setBlockReason('');
@@ -431,7 +435,7 @@ function App() {
           </Button>
           <Button 
             variant="danger" 
-            onClick={handleBlockIP}
+            onClick={() => handleBlockIP(ipToBlock, blockReason)}
             disabled={actionLoading}
           >
             {actionLoading ? (

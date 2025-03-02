@@ -37,60 +37,6 @@ recent_events = []
 # Demo mode flag - set to True to use mock data instead of real AWS
 DEMO_MODE = os.environ.get('DEMO_MODE', 'True').lower() == 'true'
 
-# AWS Configuration
-def get_aws_client(service):
-    """Create and return a boto3 client for the specified AWS service."""
-    if DEMO_MODE:
-        # Return a mock client for demo mode
-        return MockAWSClient(service)
-    
-    return boto3.client(
-        service,
-        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-        region_name=os.environ.get('AWS_REGION', 'us-east-1')
-    )
-
-# Log Fetching Module
-def fetch_cloudwatch_logs(log_group_name, start_time=None, end_time=None, filter_pattern=None):
-    """
-    Fetch logs from CloudWatch based on specified parameters.
-    
-    Args:
-        log_group_name (str): The name of the CloudWatch Log Group
-        start_time (datetime, optional): Start time for log query
-        end_time (datetime, optional): End time for log query
-        filter_pattern (str, optional): CloudWatch Logs filter pattern
-        
-    Returns:
-        list: List of log events
-    """
-    logs_client = get_aws_client('logs')
-    
-    # Convert datetime objects to milliseconds since epoch if provided
-    kwargs = {'logGroupName': log_group_name}
-    
-    if start_time:
-        kwargs['startTime'] = int(start_time.timestamp() * 1000)
-    
-    if end_time:
-        kwargs['endTime'] = int(end_time.timestamp() * 1000)
-    
-    if filter_pattern:
-        kwargs['filterPattern'] = filter_pattern
-    
-    response = logs_client.filter_log_events(**kwargs)
-    
-    events = response.get('events', [])
-    
-    # Handle pagination if there are more logs
-    while 'nextToken' in response and not DEMO_MODE:
-        kwargs['nextToken'] = response['nextToken']
-        response = logs_client.filter_log_events(**kwargs)
-        events.extend(response.get('events', []))
-    
-    return events
-
 # Log Parsing & Threat Analysis
 def parse_log_entry(log_entry):
     """
@@ -397,18 +343,6 @@ def prevent_threat():
         logger.error(f"Error in prevent API: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/analysis', methods=['GET'])
-def get_analysis():
-    """API endpoint to retrieve historical analysis results."""
-    try:
-        return jsonify({
-            'analysis_count': len(analysis_history),
-            'results': analysis_history[-100:]  # Return the most recent 100 results
-        })
-    except Exception as e:
-        logger.error(f"Error in analysis API: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
 @app.route('/api/dashboard', methods=['GET'])
 def get_dashboard_data():
     """API endpoint to retrieve dashboard data."""
@@ -428,32 +362,6 @@ def get_dashboard_data():
     except Exception as e:
         logger.error(f"Error in dashboard API: {str(e)}")
         return jsonify({'error': str(e), 'message': 'Failed to fetch dashboard data'}), 500
-
-@app.route('/api/demo/reset', methods=['POST'])
-def reset_demo():
-    """API endpoint to reset the demo data."""
-    try:
-        global analysis_history, blocked_ips, threat_stats, recent_events
-        
-        # Reset in-memory data
-        analysis_history = []
-        blocked_ips = set()
-        threat_stats = {
-            'high': 0,
-            'medium': 0,
-            'low': 0,
-            'info': 0
-        }
-        recent_events = []
-        
-        # Reset mock logs
-        reset_demo_logs()
-        
-        return jsonify({'success': True, 'message': 'Demo data reset successfully'})
-    except Exception as e:
-        logger.error(f"Error in reset API: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
 
 # Background monitoring thread
 def background_monitor():
@@ -612,5 +520,6 @@ def start_background_threads():
 
 if __name__ == '__main__':
     # Try a different port if 5000 is in use
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    port = int(os.environ.get('PORT', 8000))
+    logger.info(f"Starting Flask app on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)

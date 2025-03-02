@@ -12,6 +12,10 @@ from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
 from collections import defaultdict
 import traceback
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Import the MockAWSClient
 from mock_aws import MockAWSClient, get_demo_logs
@@ -25,7 +29,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
-CORS(app)  # Enable CORS for all routes
+CORS(app, resources={r"/api/*": {"origins": "*"}})  # Enable CORS for all routes
 
 # In-memory storage for demo purposes
 analysis_history = []

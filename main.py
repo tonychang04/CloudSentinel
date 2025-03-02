@@ -12,6 +12,9 @@ from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
 from collections import defaultdict
 
+# Import the MockAWSClient
+from mock_aws import MockAWSClient, get_demo_logs, reset_demo_logs
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -47,192 +50,6 @@ def get_aws_client(service):
         aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
         region_name=os.environ.get('AWS_REGION', 'us-east-1')
     )
-
-# Mock AWS Client for demo mode
-class MockAWSClient:
-    def __init__(self, service_name):
-        self.service_name = service_name
-        
-    def filter_log_events(self, **kwargs):
-        """Mock implementation of CloudWatch Logs filter_log_events."""
-        global demo_logs
-        
-        # Generate mock logs if none exist
-        if not demo_logs:
-            self._generate_mock_logs()
-            
-        # Return a subset of logs based on the filter
-        filter_pattern = kwargs.get('filterPattern', '').lower()
-        filtered_logs = []
-        
-        for log in demo_logs:
-            if not filter_pattern or filter_pattern in log['message'].lower():
-                filtered_logs.append(log)
-                
-        return {'events': filtered_logs}
-    
-    def authorize_security_group_ingress(self, **kwargs):
-        """Mock implementation of EC2 authorize_security_group_ingress."""
-        global blocked_ips
-        
-        # Extract the IP from the request
-        ip_ranges = kwargs.get('IpPermissions', [{}])[0].get('IpRanges', [{}])
-        if ip_ranges:
-            cidr = ip_ranges[0].get('CidrIp', '')
-            ip = cidr.split('/')[0]
-            blocked_ips.add(ip)
-            
-        return {
-            'Return': True,
-            'SecurityGroupRules': [
-                {
-                    'SecurityGroupRuleId': f'sgr-{uuid.uuid4().hex[:8]}',
-                    'GroupId': kwargs.get('GroupId', 'sg-demo'),
-                    'IpProtocol': '-1',
-                    'FromPort': -1,
-                    'ToPort': -1,
-                    'CidrIpv4': cidr
-                }
-            ]
-        }
-    
-    def _generate_mock_logs(self):
-        """Generate realistic mock logs for demo purposes."""
-        global demo_logs
-        
-        # Common IP addresses for the demo
-        ips = [
-            '192.168.1.100', '10.0.0.5', '172.16.0.10', 
-            '203.0.113.42', '198.51.100.23', '192.0.2.15'
-        ]
-        
-        # Malicious IPs that will trigger high alerts
-        malicious_ips = [
-            '45.227.253.83', '185.220.101.33', '89.248.165.64', 
-            '45.155.205.233', '5.188.206.18'
-        ]
-        
-        # Log templates
-        log_templates = [
-            # Normal logs
-            "[{timestamp}] INFO: User {user} logged in successfully from {ip}",
-            "[{timestamp}] INFO: File {file} accessed by {user} from {ip}",
-            "[{timestamp}] INFO: API request to /api/resources from {ip}",
-            "[{timestamp}] DEBUG: Database query completed in 45ms by {user}",
-            "[{timestamp}] INFO: Config updated by {user} from {ip}",
-            
-            # Low risk logs
-            "[{timestamp}] WARN: Slow query detected, took 3200ms to complete",
-            "[{timestamp}] ERROR: Failed to connect to database, retrying...",
-            "[{timestamp}] WARN: High CPU usage detected (85%)",
-            "[{timestamp}] ERROR: API request timeout from {ip}",
-            
-            # Medium risk logs
-            "[{timestamp}] WARN: Failed login attempt for user {user} from {ip}",
-            "[{timestamp}] WARN: Unusual access pattern detected from {ip}",
-            "[{timestamp}] WARN: Permission denied for {user} accessing /admin from {ip}",
-            "[{timestamp}] WARN: Multiple requests to sensitive endpoint from {ip}",
-            
-            # High risk logs
-            "[{timestamp}] ALERT: Multiple failed login attempts for admin from {ip}",
-            "[{timestamp}] CRITICAL: Possible SQL injection attempt from {ip}",
-            "[{timestamp}] ALERT: Unauthorized access attempt to /etc/passwd from {ip}",
-            "[{timestamp}] CRITICAL: Brute force attack detected from {ip}",
-            "[{timestamp}] ALERT: XSS attack signature detected in request from {ip}"
-        ]
-        
-        users = ['admin', 'john', 'alice', 'system', 'jenkins', 'api_user']
-        files = ['config.json', 'users.db', 'app.log', 'secrets.yaml', 'backup.tar.gz']
-        
-        # Generate logs over the past 24 hours
-        now = datetime.now()
-        logs = []
-        
-        # Generate normal logs (60%)
-        for i in range(60):
-            timestamp = now - timedelta(minutes=i*10)
-            template = log_templates[i % 5]  # Use the first 5 templates (normal logs)
-            ip = ips[i % len(ips)]
-            user = users[i % len(users)]
-            file = files[i % len(files)]
-            
-            message = template.format(
-                timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-                user=user,
-                ip=ip,
-                file=file
-            )
-            
-            logs.append({
-                'eventId': f'event-{uuid.uuid4().hex}',
-                'timestamp': int(timestamp.timestamp() * 1000),
-                'message': message,
-                'logStreamName': f'stream-{i % 3 + 1}'
-            })
-        
-        # Generate low risk logs (20%)
-        for i in range(20):
-            timestamp = now - timedelta(minutes=i*15)
-            template = log_templates[5 + (i % 4)]  # Use templates 5-8 (low risk)
-            ip = ips[i % len(ips)]
-            user = users[i % len(users)]
-            
-            message = template.format(
-                timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-                user=user,
-                ip=ip
-            )
-            
-            logs.append({
-                'eventId': f'event-{uuid.uuid4().hex}',
-                'timestamp': int(timestamp.timestamp() * 1000),
-                'message': message,
-                'logStreamName': f'stream-{i % 3 + 1}'
-            })
-        
-        # Generate medium risk logs (15%)
-        for i in range(15):
-            timestamp = now - timedelta(minutes=i*20)
-            template = log_templates[9 + (i % 4)]  # Use templates 9-12 (medium risk)
-            ip = ips[i % len(ips)]
-            user = users[i % len(users)]
-            
-            message = template.format(
-                timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-                user=user,
-                ip=ip
-            )
-            
-            logs.append({
-                'eventId': f'event-{uuid.uuid4().hex}',
-                'timestamp': int(timestamp.timestamp() * 1000),
-                'message': message,
-                'logStreamName': f'stream-{i % 3 + 1}'
-            })
-        
-        # Generate high risk logs (5%)
-        for i in range(5):
-            timestamp = now - timedelta(minutes=i*30)
-            template = log_templates[13 + (i % 5)]  # Use templates 13-17 (high risk)
-            ip = malicious_ips[i % len(malicious_ips)]
-            user = users[i % len(users)]
-            
-            message = template.format(
-                timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-                user=user,
-                ip=ip
-            )
-            
-            logs.append({
-                'eventId': f'event-{uuid.uuid4().hex}',
-                'timestamp': int(timestamp.timestamp() * 1000),
-                'message': message,
-                'logStreamName': f'stream-{i % 3 + 1}'
-            })
-        
-        # Sort logs by timestamp (newest first)
-        logs.sort(key=lambda x: x['timestamp'], reverse=True)
-        demo_logs = logs
 
 # Log Fetching Module
 def fetch_cloudwatch_logs(log_group_name, start_time=None, end_time=None, filter_pattern=None):
@@ -491,72 +308,81 @@ def background_monitor():
             logger.error(f"Error in background monitor: {str(e)}")
             time.sleep(60)  # Sleep longer on error
 
-# API Endpoints
-@app.route('/')
-def index():
-    """Render the dashboard page."""
-    return render_template('index.html')
-
-@app.route('/static/<path:path>')
-def serve_static(path):
-    return send_from_directory('static', path)
 
 @app.route('/api/logs', methods=['POST'])
 def process_logs():
     """API endpoint to fetch and analyze logs."""
-    global recent_events  # Move the global declaration to the top of the function
+    global recent_events
     
     try:
         data = request.json or {}
         filter_pattern = data.get('filter_pattern', '')
         
-        # Generate random logs for demo
+        # Get logs from mock AWS client
+        logs_client = get_aws_client('logs')
+        response = logs_client.filter_log_events(
+            logGroupName='demo-logs',
+            filterPattern=filter_pattern
+        )
+        
+        # Process the logs
         results = []
-        for _ in range(10):
-            risk_level = random.choice(['high', 'medium', 'low', 'info'])
-            threat_stats[risk_level] += 1
+        for event in response.get('events', []):
+            # Extract data from log message
+            message = event.get('message', '')
             
-            ip = f"192.168.1.{random.randint(1, 255)}"
-            user = random.choice(['admin', 'user1', 'system', 'guest'])
-            message = random.choice([
-                "Failed login attempt",
-                "Suspicious file access",
-                "Unusual network activity",
-                "System update completed",
-                "User password changed"
-            ])
+            # Determine risk level based on message content
+            risk_level = 'info'
+            if 'brute force' in message.lower() or 'security breach' in message.lower() or 'malicious' in message.lower():
+                risk_level = 'high'
+                threat_stats['high'] += 1
+            elif 'multiple failed' in message.lower() or 'suspicious' in message.lower() or 'unusual' in message.lower():
+                risk_level = 'medium'
+                threat_stats['medium'] += 1
+            elif 'failed' in message.lower() or 'denied' in message.lower() or 'invalid' in message.lower():
+                risk_level = 'low'
+                threat_stats['low'] += 1
+            else:
+                threat_stats['info'] += 1
             
-            # Apply filter if provided
-            if filter_pattern and filter_pattern.lower() not in message.lower() and filter_pattern not in ip:
-                continue
-                
+            # Extract IP address using regex
+            ip_match = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', message)
+            ip_address = ip_match.group(0) if ip_match else None
+            
+            # Extract timestamp
+            timestamp_match = re.search(r'\[(.*?)\]', message)
+            timestamp = timestamp_match.group(1) if timestamp_match else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Extract user
+            user_match = re.search(r'user (\w+\.?\w*)', message, re.IGNORECASE)
+            user = user_match.group(1) if user_match else None
+            
+            # Create log data object
             log_data = {
-                'timestamp': datetime.now().isoformat(),
-                'ip_address': ip,
+                'timestamp': timestamp,
+                'ip_address': ip_address,
                 'user': user,
                 'message': message
             }
             
+            # Create result object
             result = {
                 'id': str(uuid.uuid4()),
                 'risk_level': risk_level,
                 'detected_threats': ['Suspicious Activity'],
-                'timestamp': datetime.now().isoformat(),
                 'log_data': log_data
             }
             
             results.append(result)
-            analysis_history.append(result)
             
-            # Add to recent events
-            if risk_level != 'info':
+            # Add to recent events if not info level
+            if risk_level != 'info' and ip_address:
                 recent_events.append({
                     'id': result['id'],
-                    'timestamp': log_data['timestamp'],
-                    'message': log_data['message'],
-                    'ip': log_data['ip_address'],
-                    'risk_level': risk_level,
-                    'threats': 'Suspicious Activity'
+                    'timestamp': timestamp,
+                    'message': message,
+                    'ip': ip_address,
+                    'risk_level': risk_level
                 })
         
         # Keep only the 10 most recent events
@@ -580,16 +406,32 @@ def prevent_threat():
         if not ip:
             return jsonify({'success': False, 'message': 'No IP address provided'})
         
-        blocked_ips.add(ip)
+        # Block the IP using mock AWS client
+        ec2_client = get_aws_client('ec2')
+        response = ec2_client.authorize_security_group_ingress(
+            GroupId='sg-demo',
+            IpPermissions=[
+                {
+                    'IpProtocol': '-1',
+                    'FromPort': -1,
+                    'ToPort': -1,
+                    'IpRanges': [
+                        {
+                            'CidrIp': f'{ip}/32',
+                            'Description': data.get('description', 'Blocked by CloudSentinel')
+                        }
+                    ]
+                }
+            ]
+        )
         
         # Add to recent events
         recent_events.append({
             'id': str(uuid.uuid4()),
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'message': f'IP {ip} blocked',
             'ip': ip,
-            'risk_level': 'blocked',
-            'threats': 'Manual block'
+            'risk_level': 'blocked'
         })
         
         return jsonify({
@@ -616,15 +458,21 @@ def get_analysis():
 def get_dashboard_data():
     """API endpoint to retrieve dashboard data."""
     try:
-        return jsonify({
+        
+        # Add debug logging
+        logger.info("Dashboard API called")
+        
+        response_data = {
             'threat_stats': threat_stats,
             'blocked_ips': list(blocked_ips),
             'recent_events': recent_events,
             'total_logs_analyzed': sum(threat_stats.values())
-        })
+        }
+        
+        return jsonify(response_data)
     except Exception as e:
         logger.error(f"Error in dashboard API: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': str(e), 'message': 'Failed to fetch dashboard data'}), 500
 
 @app.route('/api/demo/reset', methods=['POST'])
 def reset_demo():
@@ -632,6 +480,7 @@ def reset_demo():
     try:
         global analysis_history, blocked_ips, threat_stats, recent_events
         
+        # Reset in-memory data
         analysis_history = []
         blocked_ips = set()
         threat_stats = {
@@ -641,6 +490,9 @@ def reset_demo():
             'info': 0
         }
         recent_events = []
+        
+        # Reset mock logs
+        reset_demo_logs()
         
         return jsonify({'success': True, 'message': 'Demo data reset successfully'})
     except Exception as e:
@@ -659,7 +511,10 @@ def start_background_tasks():
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve(path):
-    if path != "" and os.path.exists(os.path.join('build', path)):
+    if path.startswith('api/'):
+        # Let the API routes handle API requests
+        return jsonify({'error': 'API endpoint not found'}), 404
+    elif path != "" and os.path.exists(os.path.join('build', path)):
         return send_from_directory('build', path)
     else:
         return send_from_directory('build', 'index.html')

@@ -31,7 +31,7 @@ function App() {
       setLastUpdated(new Date().toLocaleString());
     } catch (error) {
       console.error('Error fetching dashboard:', error);
-      alert('Failed to fetch dashboard data');
+      alert(error);
     } finally {
       setLoading(false);
     }

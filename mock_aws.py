@@ -20,8 +20,9 @@ class MockAWSClient:
         
         # Generate mock logs if none exist
         if not demo_logs:
+            logger.info("No demo logs exist, generating new ones")
             self._generate_mock_logs()
-            
+        
         # Return a subset of logs based on the filter
         filter_pattern = kwargs.get('filterPattern', '').lower()
         filtered_logs = []
@@ -29,8 +30,14 @@ class MockAWSClient:
         for log in demo_logs:
             if not filter_pattern or filter_pattern in log['message'].lower():
                 filtered_logs.append(log)
-                
+        
         logger.info(f"Mock filter_log_events returned {len(filtered_logs)} logs")
+        
+        # If no logs match the filter, return all logs
+        if not filtered_logs:
+            logger.info(f"No logs matched filter '{filter_pattern}', returning all logs")
+            filtered_logs = demo_logs
+        
         return {'events': filtered_logs}
     
     def authorize_security_group_ingress(self, **kwargs):

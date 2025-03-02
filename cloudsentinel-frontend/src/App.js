@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { Container, Row, Col, Card, Table, Badge, Button, Modal, Form, Spinner, Navbar, Nav } from 'react-bootstrap';
-import axios from 'axios';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import 'bootstrap-icons/font/bootstrap-icons.css';
 import './App.css';
@@ -11,7 +10,6 @@ export const fetchDashboardData = async () => {
     console.log("Fetching dashboard data...");
     const response = await fetch('/api/dashboard');
     console.log("Dashboard response status:", response.status);
-    
     if (!response.ok) {
       const errorText = await response.text();
       console.error("Error response:", errorText);
@@ -80,6 +78,23 @@ export const resetDemo = async () => {
   }
 };
 
+// Define a consistent color mapping function for risk levels
+const getRiskLevelColor = (riskLevel) => {
+  switch (riskLevel.toLowerCase()) {
+    case 'high':
+      return 'danger';  
+    case 'medium':
+      return 'warning';
+    case 'low':
+      return 'primary'; 
+    case 'blocked':
+      return 'dark';    // Black
+    case 'info':
+    default:
+      return 'success'; // Green
+  }
+};
+
 function App() {
   // Separate loading states for different operations
   const [dashboardLoading, setDashboardLoading] = useState(false);
@@ -102,6 +117,9 @@ function App() {
 
   // Add a specific state for refresh animation
   const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Add state variables for auto-refresh intervals
+  const [logsRefreshInterval, setLogsRefreshInterval] = useState(null);
 
   // Format date
   const formatDate = (dateString) => {
@@ -180,6 +198,46 @@ function App() {
     }
   };
 
+  // Function to start logs auto-refresh
+  const startLogsAutoRefresh = () => {
+    if (logsRefreshInterval) {
+      clearInterval(logsRefreshInterval);
+    }
+    
+    // Fetch logs immediately
+    handleFetchLogs();
+    
+    // Set up interval to fetch logs every 5 seconds
+    const intervalId = setInterval(() => {
+      if (showLogsModal) {
+        handleFetchLogs();
+      } else {
+        // If modal is closed, stop auto-refresh
+        clearInterval(intervalId);
+        setLogsRefreshInterval(null);
+      }
+    }, 5000); // 5 seconds
+    
+    setLogsRefreshInterval(intervalId);
+  };
+
+  // Update handleOpenLogsModal to start logs auto-refresh
+  const handleOpenLogsModal = () => {
+    setShowLogsModal(true);
+    // Start auto-refresh when modal opens
+    startLogsAutoRefresh();
+  };
+
+  // Update handleCloseLogsModal to stop logs auto-refresh
+  const handleCloseLogsModal = () => {
+    setShowLogsModal(false);
+    // Stop auto-refresh when modal closes
+    if (logsRefreshInterval) {
+      clearInterval(logsRefreshInterval);
+      setLogsRefreshInterval(null);
+    }
+  };
+
   // Initialize dashboard on component mount
   useEffect(() => {
     // Pass true to indicate this is the initial load
@@ -220,7 +278,7 @@ function App() {
           <Navbar.Collapse id="navbarNav">
             <Nav className="me-auto">
               <Nav.Link active>Dashboard</Nav.Link>
-              <Nav.Link onClick={() => setShowLogsModal(true)}>Logs</Nav.Link>
+              <Nav.Link onClick={handleOpenLogsModal}>Logs</Nav.Link>
               <Nav.Link onClick={() => setShowBlockModal(true)}>Block IP</Nav.Link>
             </Nav>
             <Navbar.Text>
@@ -300,12 +358,7 @@ function App() {
                           <td>{formatDate(event.timestamp)}</td>
                           <td>{event.ip || 'N/A'}</td>
                           <td>
-                            <Badge bg={
-                              event.risk_level === 'high' ? 'danger' :
-                              event.risk_level === 'medium' ? 'warning' :
-                              event.risk_level === 'low' ? 'info' :
-                              event.risk_level === 'blocked' ? 'purple' : 'secondary'
-                            }>
+                            <Badge bg={getRiskLevelColor(event.risk_level)}>
                               {event.risk_level.toUpperCase()}
                             </Badge>
                           </td>
@@ -408,39 +461,39 @@ function App() {
       </Modal>
 
       {/* Logs Modal */}
-      <Modal size="xl" show={showLogsModal} onHide={() => setShowLogsModal(false)}>
+      <Modal show={showLogsModal} onHide={handleCloseLogsModal} size="lg">
         <Modal.Header closeButton>
           <Modal.Title>Log Analysis</Modal.Title>
         </Modal.Header>
         <Modal.Body>
           <Row className="mb-3">
-            <Col md={6}>
+            <Col md={8}>
               <div className="input-group">
-                <span className="input-group-text">Filter</span>
-                <Form.Control
+                <input
                   type="text"
-                  placeholder="e.g., error, warning, IP address"
+                  className="form-control"
+                  placeholder="Filter logs..."
                   value={logFilter}
                   onChange={(e) => setLogFilter(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && handleFetchLogs()}
                 />
-                <Button variant="primary" onClick={handleFetchLogs}>
-                  Apply
-                </Button>
               </div>
+              <small className="text-muted">Leave empty to show all logs</small>
             </Col>
-            <Col md={6} className="text-end">
-              <Button variant="secondary" onClick={handleFetchLogs}>
-                <i className="bi bi-cloud-download"></i> Fetch New Logs
-              </Button>
+            <Col md={4} className="text-end">
+              <small className="text-muted">
+                Auto-refreshing every 5 seconds
+              </small>
             </Col>
           </Row>
+          
           {logsLoading ? (
             <div className="text-center p-4">
               <Spinner animation="border" role="status">
                 <span className="visually-hidden">Loading...</span>
               </Spinner>
             </div>
-          ) : (
+          ) : logs.length > 0 ? (
             <Table responsive hover size="sm">
               <thead>
                 <tr>
@@ -452,46 +505,33 @@ function App() {
                 </tr>
               </thead>
               <tbody>
-                {logs.length > 0 ? (
-                  logs.map((result) => (
-                    <tr key={result.id}>
-                      <td>{result.log_data.timestamp || 'N/A'}</td>
-                      <td>{result.log_data.ip_address || 'N/A'}</td>
-                      <td>{result.log_data.user || 'N/A'}</td>
-                      <td>
-                        <Badge bg={
-                          result.risk_level === 'high' ? 'danger' :
-                          result.risk_level === 'medium' ? 'warning' :
-                          result.risk_level === 'low' ? 'info' : 'secondary'
-                        }>
-                          {result.risk_level.toUpperCase()}
-                        </Badge>
-                      </td>
-                      <td>{result.log_data.message}</td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan="5" className="text-center">No logs to display</td>
+                {logs.map((result) => (
+                  <tr key={result.id}>
+                    <td>{result.log_data?.timestamp || 'N/A'}</td>
+                    <td>{result.log_data?.ip_address || 'N/A'}</td>
+                    <td>{result.log_data?.user || 'N/A'}</td>
+                    <td>
+                    <Badge bg={getRiskLevelColor(result.risk_level)}>
+                              {result.risk_level.toUpperCase()}
+                            </Badge>
+                    </td>
+                    <td>{result.log_data?.message || 'N/A'}</td>
                   </tr>
-                )}
+                ))}
               </tbody>
             </Table>
+          ) : (
+            <div className="text-center p-4">
+              <p>No logs found matching your criteria.</p>
+            </div>
           )}
         </Modal.Body>
         <Modal.Footer>
-          <Button variant="secondary" onClick={() => setShowLogsModal(false)}>
+          <Button variant="secondary" onClick={handleCloseLogsModal}>
             Close
           </Button>
         </Modal.Footer>
       </Modal>
-
-      {/* Demo Controls */}
-      <div className="demo-controls">
-        <Button variant="dark" onClick={resetDemo} title="Reset Demo Data">
-          <i className="bi bi-arrow-counterclockwise"></i> Reset Demo
-        </Button>
-      </div>
     </div>
   );
 }

@@ -52,15 +52,23 @@
 }
 
 .risk-high {
-  color: #dc3545;
+  color: #dc3545; /* Bootstrap danger - red */
 }
 
 .risk-medium {
-  color: #fd7e14;
+  color: #fd7e14; /* Bootstrap orange */
 }
 
 .risk-low {
-  color: #ffc107;
+  color: #0d6efd; /* Bootstrap primary - blue */
+}
+
+.risk-info {
+  color: #198754; /* Bootstrap success - green */
+}
+
+.risk-blocked {
+  color: #212529; /* Bootstrap dark - black */
 }
 
 .refresh-btn {
@@ -121,4 +129,4 @@
   align-items: center;
   justify-content: center;
   z-index: 1000;
-} 
+}

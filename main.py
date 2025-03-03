@@ -17,11 +17,8 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-# Import the MockAWSClient
-from mock_aws import MockAWSClient, get_demo_logs
-
 # Import the AWS integration class
-from aws_integration import AWSIntegration
+from aws_integration import AWSIntegration, MockAWSClient
 from ai_analyzer import AILogAnalyzer
 
 # Configure logging
@@ -368,10 +365,10 @@ def process_log_with_ai(log_event):
 
 # Background thread for generating new logs in demo mode
 def background_log_generator():
-    """Background thread that periodically generates new logs."""
+    """Background thread that periodically generates CloudTrail-style logs."""
     global recent_events, threat_stats, all_logs, blocked_ips
     
-    logger.info("Starting background log generator thread")
+    logger.info("Starting background CloudTrail log generator thread")
     
     while True:
         try:
@@ -379,86 +376,34 @@ def background_log_generator():
             sleep_time = random.randint(5, 15)
             time.sleep(sleep_time)
             
-            # Generate a new log event
-            risk_levels = ['high', 'medium', 'low', 'info']
-            weights = [0.1, 0.2, 0.3, 0.4]  # 10% high, 20% medium, 30% low, 40% info
-            risk_level = random.choices(risk_levels, weights=weights)[0]
+            # Use the AWS integration to generate mock CloudTrail events
+            events = aws._generate_mock_cloudtrail_events(count=random.randint(1, 3))
             
-            # Update threat stats
-            threat_stats[risk_level] += 1
-            
-            # Generate IP address
-            ip_octets = [str(random.randint(1, 255)) for _ in range(4)]
-            ip = '.'.join(ip_octets)
-            
-            # Generate username
-            usernames = ['admin', 'john.doe', 'jane.smith', 'system', 'root', 'guest']
-            user = random.choice(usernames)
-            
-            # Generate message based on risk level
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            if risk_level == 'high':
-                messages = [
-                    f"[{timestamp}] Possible brute force attack detected from {ip}",
-                    f"[{timestamp}] Unauthorized access to sensitive file /etc/passwd from {ip}",
-                    f"[{timestamp}] Malicious script execution detected from {ip}",
-                    f"[{timestamp}] Security breach detected for user {user} from {ip}"
-                ]
-            elif risk_level == 'medium':
-                messages = [
-                    f"[{timestamp}] Multiple failed login attempts for user {user} from {ip}",
-                    f"[{timestamp}] Unusual file access pattern detected from {ip}",
-                    f"[{timestamp}] Suspicious command execution by {user} from {ip}",
-                    f"[{timestamp}] Unexpected system configuration change from {ip}"
-                ]
-            elif risk_level == 'low':
-                messages = [
-                    f"[{timestamp}] Failed login attempt for user {user} from {ip}",
-                    f"[{timestamp}] Permission denied for {user} from {ip}",
-                    f"[{timestamp}] Invalid password for {user} from {ip}",
-                    f"[{timestamp}] File not found error reported by {user}"
-                ]
-            else:  # info
-                messages = [
-                    f"[{timestamp}] User {user} logged in from {ip}",
-                    f"[{timestamp}] File accessed by {user} from {ip}",
-                    f"[{timestamp}] Configuration change by {user}",
-                    f"[{timestamp}] System update completed successfully"
-                ]
+            for event in events:
+                # Update threat stats
+                risk_level = event['risk_level']
+                threat_stats[risk_level] = threat_stats.get(risk_level, 0) + 1
                 
-            message = random.choice(messages)
-            
-            # Create event
-            event = {
-                'id': str(uuid.uuid4()),
-                'timestamp': timestamp,
-                'message': message,
-                'ip': ip,
-                'user': user,
-                'risk_level': risk_level,
-                'source': 'demo'
-            }
-            
-            # Process with AI (if enabled)
-            try:
-                event = process_log_with_ai(event)
-            except Exception as e:
-                logger.error(f"Error processing log with AI: {str(e)}")
-            
-            # Add to all_logs
-            all_logs.append(event)
-            
-            # Add to recent_events (except info logs)
-            if event['risk_level'] != 'info':
-                recent_events.append(event)
+                # Process with AI (if enabled)
+                try:
+                    event = process_log_with_ai(event)
+                except Exception as e:
+                    logger.error(f"Error processing log with AI: {str(e)}")
                 
-                # Keep only the most recent 20 events
-                if len(recent_events) > 20:
-                    recent_events = recent_events[-20:]
+                # Add to all_logs
+                all_logs.append(event)
+                
+                # Add to recent_events (except info logs)
+                if event['risk_level'] != 'info':
+                    recent_events.append(event)
+                    
+                    # Keep only the most recent 20 events
+                    if len(recent_events) > 20:
+                        recent_events = recent_events[-20:]
+                
+                # Log the current state
+                logger.info(f"Generated new {event['risk_level']} risk CloudTrail event: {event['message']}")
             
-            # Log the current state
-            logger.info(f"Generated new {event['risk_level']} risk event: {message}")
             logger.info(f"Current stats - all_logs: {len(all_logs)}, recent_events: {len(recent_events)}")
             logger.info(f"Threat stats: {threat_stats}")
             
@@ -467,7 +412,7 @@ def background_log_generator():
                 all_logs = all_logs[-1000:]
                 
         except Exception as e:
-            logger.error(f"Error in background log generator: {str(e)}")
+            logger.error(f"Error in background CloudTrail log generator: {str(e)}")
             traceback.print_exc()
             time.sleep(30)  # Sleep longer on error
 
@@ -478,57 +423,53 @@ def background_monitor():
     
     logger.info("Starting AWS monitoring thread")
     
-    def process_aws_log(log_event, source='cloudwatch', log_group=None):
-        """Process a log event from AWS."""
+    while True:
         try:
-            # Parse the log entry
-            parsed_log = parse_log_entry(log_event)
+            logger.info("Checking AWS CloudTrail events...")
             
-            # Create event
-            event = {
-                'id': str(uuid.uuid4()),
-                'timestamp': parsed_log.get('timestamp') or datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'message': parsed_log.get('message', ''),
-                'ip': parsed_log.get('ip_address'),
-                'user': parsed_log.get('user'),
-                'risk_level': 'info',  # Default risk level
-                'source': source,
-                'log_group': log_group
-            }
+            # Process security logs from AWS
+            def log_callback(event, source=None, log_group=None):
+                """Callback function for processing AWS logs."""
+                try:
+                    # The event is already processed by the AWS integration
+                    log_event = event
+                    
+                    # Process with AI if needed
+                    if 'ai_analysis' not in log_event:
+                        log_event = process_log_with_ai(log_event)
+                    
+                    # Add to all_logs
+                    all_logs.append(log_event)
+                    
+                    # Update threat stats
+                    risk_level = log_event.get('risk_level', 'info')
+                    threat_stats[risk_level] = threat_stats.get(risk_level, 0) + 1
+                    
+                    # Add to recent_events if not info level
+                    if risk_level != 'info':
+                        recent_events.append(log_event)
+                        
+                        # Keep only the most recent 20 events
+                        if len(recent_events) > 20:
+                            recent_events = recent_events[-20:]
+                    
+                except Exception as e:
+                    logger.error(f"Error in log callback: {str(e)}")
             
-            # Process with AI
-            event = process_log_with_ai(event)
+            # Process logs from AWS
+            processed_count = aws.process_security_logs(callback=log_callback)
             
-            # Add to all_logs
-            all_logs.append(event)
-            
-            # Add to recent_events (except info logs)
-            if event['risk_level'] != 'info':
-                recent_events.append(event)
-                
-                # Keep only the most recent 20 events
-                if len(recent_events) > 20:
-                    recent_events = recent_events[-20:]
+            logger.info(f"Processed {processed_count} AWS CloudTrail events")
             
             # Keep all_logs from growing too large
             if len(all_logs) > 1000:
                 all_logs = all_logs[-1000:]
-                
-        except Exception as e:
-            logger.error(f"Error processing AWS log: {str(e)}")
-    
-    while True:
-        try:
-            # Process AWS logs
-            processed_count = aws.process_security_logs(callback=process_aws_log)
             
-            logger.info(f"Processed {processed_count} AWS log events")
-            
-            # Sleep for 5 minutes
+            # Sleep for 5 minutes before checking again
             time.sleep(300)
             
         except Exception as e:
-            logger.error(f"Error in AWS monitoring thread: {str(e)}")
+            logger.error(f"Error in AWS monitoring: {str(e)}")
             traceback.print_exc()
             time.sleep(60)  # Sleep for 1 minute on error
 
@@ -929,22 +870,181 @@ def debug_info():
         'sample_log': all_logs[0] if all_logs else None
     })
 
-@app.before_first_request
-def start_background_tasks():
-    """Start background tasks before the first request is processed."""
+def analyze_log_without_ai(log_event):
+    """
+    Analyze a log event without using AI.
     
-    # Start background log generator
-    log_thread = threading.Thread(target=background_log_generator)
-    log_thread.daemon = True
-    log_thread.start()
-    logger.info("Background log generator started")
+    This function uses rule-based analysis to determine the risk level and
+    provide insights about the log event.
     
-    # Start background monitor if in demo mode
-    if DEMO_MODE:
-        monitor_thread = threading.Thread(target=background_monitor)
-        monitor_thread.daemon = True
-        monitor_thread.start()
-        logger.info("Background monitor started")
+    Args:
+        log_event (dict): The log event to analyze
+        
+    Returns:
+        dict: The log event with analysis added
+    """
+    # Make a copy of the log event to avoid modifying the original
+    event = log_event.copy()
+    
+    # If the event already has a risk level from CloudTrail processing, use it
+    if 'risk_level' in event and event['risk_level'] != 'info':
+        risk_level = event['risk_level']
+    else:
+        risk_level = 'info'  # Default risk level
+    
+    # Initialize analysis
+    analysis = []
+    
+    # Check if this is a CloudTrail event
+    if event.get('source') == 'cloudtrail':
+        event_name = event.get('event_name', '')
+        event_source = event.get('event_source', '')
+        username = event.get('username', '')
+        ip = event.get('ip', '')
+        user_agent = event.get('user_agent', '')
+        raw_event = event.get('raw_event', {})
+        
+        # High-risk events
+        high_risk_events = {
+            'ConsoleLogin': 'Console login attempts, especially failures, may indicate unauthorized access attempts',
+            'DeleteTrail': 'Deleting CloudTrail trails is a common technique to cover tracks during an attack',
+            'StopLogging': 'Stopping CloudTrail logging is a common technique to avoid detection',
+            'CreateUser': 'Creating new IAM users, especially with admin privileges, could indicate account takeover',
+            'AttachUserPolicy': 'Attaching admin policies to users is a privilege escalation technique',
+            'PutBucketPolicy': 'Modifying bucket policies to allow public access is a common data exfiltration technique',
+            'ModifyVpcEndpoint': 'Modifying VPC endpoints can be used to bypass security controls'
+        }
+        
+        # Medium-risk events
+        medium_risk_events = {
+            'RunInstances': 'Launching unusual or high-powered instances could indicate cryptomining or resource theft',
+            'CreateSecurityGroup': 'Creating new security groups could be preparation for network attacks',
+            'AuthorizeSecurityGroupIngress': 'Opening security groups to all traffic is a security risk',
+            'CreateBucket': 'Creating buckets in non-standard regions could indicate data exfiltration',
+            'CreateAccessKey': 'Creating new access keys could indicate credential harvesting'
+        }
+        
+        # Check for specific high-risk patterns
+        if event_name in high_risk_events:
+            risk_level = 'high'
+            analysis.append(high_risk_events[event_name])
+            
+            # Add more specific analysis based on event details
+            if event_name == 'ConsoleLogin':
+                if 'errorCode' in raw_event and raw_event['errorCode'] == 'AccessDenied':
+                    analysis.append('Failed login attempts may indicate brute force attacks')
+                if 'additionalEventData' in raw_event and raw_event['additionalEventData'].get('MFAUsed') == 'No':
+                    analysis.append('Login without MFA is a security concern, especially for privileged accounts')
+            
+            elif event_name == 'CreateUser' and 'backdoor' in event.get('message', '').lower():
+                analysis.append('User name suggests malicious intent - possible backdoor account creation')
+            
+            elif event_name == 'AttachUserPolicy' and 'AdministratorAccess' in event.get('message', ''):
+                analysis.append('Attaching AdministratorAccess policy grants full control of the AWS account')
+            
+            elif event_name == 'PutBucketPolicy' and '"Principal":"*"' in str(raw_event):
+                analysis.append('Policy allows access from any principal (public access), which is a major security risk')
+        
+        # Check for specific medium-risk patterns
+        elif event_name in medium_risk_events:
+            risk_level = 'medium'
+            analysis.append(medium_risk_events[event_name])
+            
+            # Add more specific analysis based on event details
+            if event_name == 'RunInstances':
+                if 'p3.' in event.get('message', '') or 'g4.' in event.get('message', ''):
+                    analysis.append('High-performance GPU instances could indicate unauthorized cryptomining')
+                if 'requestParameters' in raw_event and raw_event['requestParameters'].get('maxCount', 1) > 2:
+                    analysis.append(f"Launching multiple instances ({raw_event['requestParameters'].get('maxCount')}) simultaneously is unusual")
+            
+            elif event_name == 'AuthorizeSecurityGroupIngress':
+                if '0.0.0.0/0' in str(raw_event):
+                    analysis.append('Rule allows access from any IP address (0.0.0.0/0), which is a security risk')
+                if '-1' in str(raw_event) or 'all' in str(raw_event).lower():
+                    analysis.append('Rule allows all protocols, which is overly permissive')
+        
+        # Check for suspicious IP addresses
+        if ip.startswith(('185.', '45.')):
+            if risk_level == 'info':
+                risk_level = 'low'
+            analysis.append(f'IP address {ip} is from a range known to host malicious activities')
+        
+        # Check for suspicious user agents
+        suspicious_agents = ['curl', 'wget', 'python-requests', 'Go-http-client']
+        if any(agent in user_agent for agent in suspicious_agents):
+            if risk_level == 'info':
+                risk_level = 'low'
+            analysis.append(f'Unusual user agent "{user_agent}" suggests programmatic access')
+        
+        # Check for root account usage
+        if username == 'root':
+            if risk_level != 'high':
+                risk_level = 'medium'
+            analysis.append('Root account usage is against AWS best practices and should be investigated')
+        
+        # Check for unusual regions
+        unusual_regions = ['ap-east-1', 'me-south-1', 'af-south-1', 'eu-south-1']
+        if 'region' in event and event['region'] in unusual_regions:
+            if risk_level == 'info':
+                risk_level = 'low'
+            analysis.append(f'Activity in unusual region {event["region"]} could indicate an attempt to evade detection')
+    
+    # For non-CloudTrail events, use basic pattern matching
+    else:
+        message = event.get('message', '').lower()
+        
+        # Check for high-risk patterns
+        high_risk_patterns = [
+            'brute force', 'unauthorized', 'malicious', 'breach', 'attack',
+            'compromise', 'exploit', 'backdoor', 'ransomware', 'crypto'
+        ]
+        
+        # Check for medium-risk patterns
+        medium_risk_patterns = [
+            'failed login', 'multiple failed', 'unusual', 'suspicious',
+            'unexpected', 'denied', 'permission denied', 'invalid password'
+        ]
+        
+        # Check for low-risk patterns
+        low_risk_patterns = [
+            'failed', 'error', 'warning', 'not found', 'invalid'
+        ]
+        
+        # Check message against patterns
+        if any(pattern in message for pattern in high_risk_patterns):
+            risk_level = 'high'
+            matching_patterns = [p for p in high_risk_patterns if p in message]
+            analysis.append(f'Message contains high-risk terms: {", ".join(matching_patterns)}')
+        
+        elif any(pattern in message for pattern in medium_risk_patterns):
+            risk_level = 'medium'
+            matching_patterns = [p for p in medium_risk_patterns if p in message]
+            analysis.append(f'Message contains medium-risk terms: {", ".join(matching_patterns)}')
+        
+        elif any(pattern in message for pattern in low_risk_patterns):
+            risk_level = 'low'
+            matching_patterns = [p for p in low_risk_patterns if p in message]
+            analysis.append(f'Message contains low-risk terms: {", ".join(matching_patterns)}')
+    
+    # Add IP-based analysis for any event type
+    if 'ip' in event:
+        ip = event['ip']
+        
+        # Check for internal IPs
+        if ip.startswith(('10.', '172.16.', '172.17.', '172.18.', '172.19.', '172.20.', 
+                          '172.21.', '172.22.', '172.23.', '172.24.', '172.25.', 
+                          '172.26.', '172.27.', '172.28.', '172.29.', '172.30.', 
+                          '172.31.', '192.168.')):
+            analysis.append(f'IP {ip} is from an internal network range')
+        else:
+            analysis.append(f'IP {ip} is from an external network')
+    
+    # Update the event with analysis results
+    event['risk_level'] = risk_level
+    event['analysis'] = analysis
+    event['ai_analysis'] = False  # Mark as non-AI analysis
+    
+    return event
 
 if __name__ == '__main__':
     logger.info("Starting CloudSentinel application")

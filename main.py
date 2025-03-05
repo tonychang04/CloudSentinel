@@ -15,7 +15,7 @@ import traceback
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv()
+load_dotenv(override=True)
 
 # Import the AWS integration class
 from aws_integration import AWSIntegration, MockAWSClient
@@ -40,8 +40,10 @@ threat_stats = {
 }
 recent_events = []
 
-# Demo mode flag - set to True to use mock data instead of real AWS
-DEMO_MODE = os.environ.get('DEMO_MODE', 'True').lower() == 'true'
+
+
+
+DEMO_MODE = False
 
 # Initialize global variables - IMPORTANT: Define these at the module level
 all_logs = []

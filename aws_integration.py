@@ -836,8 +836,19 @@ class AWSIntegration:
             int: Number of logs processed
         """
         if self.demo_mode:
-            self.logger.info("Demo mode: Skipping real AWS log processing")
-            return 0
+            self.logger.info("Demo mode: Generating mock CloudTrail events")
+            # Generate 5-15 random events
+            event_count = random.randint(5, 15)
+            events = self._generate_mock_cloudtrail_events(count=event_count)
+            
+            processed_count = 0
+            for event in events:
+                if callback:
+                    callback(event, source='cloudtrail')
+                processed_count += 1
+            
+            self.logger.info(f"Generated {processed_count} mock CloudTrail events")
+            return processed_count
         
         processed_count = 0
         

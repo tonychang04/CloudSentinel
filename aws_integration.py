@@ -5,6 +5,8 @@ import json
 from datetime import datetime, timedelta
 import random
 import uuid
+import traceback
+import re
 
 class MockAWSClient:
     """Mock AWS client for demo mode."""
@@ -86,108 +88,49 @@ class AWSIntegration:
             region_name=self.region
         )
     
-    def fetch_cloudwatch_logs(self, log_group_name, start_time=None, end_time=None, filter_pattern=None):
-        """
-        Fetch logs from CloudWatch based on specified parameters.
-        
-        Args:
-            log_group_name (str): The name of the CloudWatch Log Group
-            start_time (datetime, optional): Start time for log query
-            end_time (datetime, optional): End time for log query
-            filter_pattern (str, optional): CloudWatch Logs filter pattern
-            
-        Returns:
-            list: List of log events
-        """
-        logs_client = self.get_client('logs')
-        
-        # Convert datetime objects to milliseconds since epoch if provided
-        kwargs = {'logGroupName': log_group_name}
-        
-        if start_time:
-            kwargs['startTime'] = int(start_time.timestamp() * 1000)
-        
-        if end_time:
-            kwargs['endTime'] = int(end_time.timestamp() * 1000)
-        
-        if filter_pattern:
-            kwargs['filterPattern'] = filter_pattern
-        
-        try:
-            response = logs_client.filter_log_events(**kwargs)
-            
-            events = response.get('events', [])
-            
-            # Handle pagination if there are more logs
-            while 'nextToken' in response and not self.demo_mode:
-                kwargs['nextToken'] = response['nextToken']
-                response = logs_client.filter_log_events(**kwargs)
-                events.extend(response.get('events', []))
-            
-            return events
-        except Exception as e:
-            self.logger.error(f"Error fetching CloudWatch logs: {str(e)}")
-            return []
-    
     def fetch_cloudtrail_events(self, start_time=None, end_time=None):
         """
-        Fetch events from CloudTrail.
+        Fetch CloudTrail events.
         
         Args:
-            start_time (datetime, optional): Start time for event query
-            end_time (datetime, optional): End time for event query
+            start_time (datetime, optional): Start time for events
+            end_time (datetime, optional): End time for events
             
         Returns:
-            list: List of CloudTrail events
+            list: List of processed CloudTrail events
         """
         if self.demo_mode:
-            self.logger.info("Demo mode: Returning mock CloudTrail events")
             return self._generate_mock_cloudtrail_events()
         
-        cloudtrail = self.get_client('cloudtrail')
-        
-        # Set default time range if not provided
-        if not end_time:
-            end_time = datetime.now()
-        if not start_time:
-            start_time = end_time - timedelta(hours=self.lookback_hours)
-        
-        self.logger.info(f"Fetching CloudTrail events from {start_time} to {end_time}")
-        
         try:
-            # CloudTrail LookupEvents API has a limit of 50 results per call
-            # We'll need to use pagination to get all events
-            events = []
-            next_token = None
+            self.logger.info(f"Fetching CloudTrail events from {start_time} to {end_time}")
             
-            while True:
-                kwargs = {
-                    'StartTime': start_time,
-                    'EndTime': end_time,
-                    'MaxResults': 50  # Maximum allowed by API
-                }
-                
-                if next_token:
-                    kwargs['NextToken'] = next_token
-                
-                response = cloudtrail.lookup_events(**kwargs)
-                
-                # Process the events
-                for event in response.get('Events', []):
-                    # Convert CloudTrail event to a standardized format
-                    processed_event = self._process_cloudtrail_event(event)
-                    events.append(processed_event)
-                
-                # Check if there are more events to fetch
-                next_token = response.get('NextToken')
-                if not next_token:
-                    break
+            # Create CloudTrail client
+            cloudtrail = self.get_client('cloudtrail')
             
-            self.logger.info(f"Fetched {len(events)} CloudTrail events")
-            return events
+            # Set up parameters for lookup_events
+            params = {}
+            if start_time:
+                params['StartTime'] = start_time
+            if end_time:
+                params['EndTime'] = end_time
+            
+            # Fetch events
+            response = cloudtrail.lookup_events(**params)
+            print(response)
+            
+            # Process events
+            processed_events = []
+            for event in response.get('Events', []):
+                processed_event = self._process_cloudtrail_event(event)
+                processed_events.append(processed_event)
+            
+            self.logger.info(f"Fetched {len(processed_events)} CloudTrail events")
+            return processed_events
             
         except Exception as e:
             self.logger.error(f"Error fetching CloudTrail events: {str(e)}")
+            traceback.print_exc()
             return []
     
     def _process_cloudtrail_event(self, event):
@@ -201,16 +144,101 @@ class AWSIntegration:
             dict: Processed event
         """
         try:
-            # Extract the CloudTrail event details
-            event_name = event.get('EventName', 'Unknown')
-            event_time = event.get('EventTime', datetime.now())
-            username = event.get('Username', 'Unknown')
-            source_ip = event.get('SourceIpAddress', 'Unknown')
-            user_agent = event.get('UserAgent', 'Unknown')
-            event_source = event.get('EventSource', 'Unknown').replace('.amazonaws.com', '')
-            
-            # Parse the CloudTrail event
-            cloud_trail_event = json.loads(event.get('CloudTrailEvent', '{}'))
+            # For real CloudTrail events (not from lookup_events API)
+            if 'eventVersion' in event:
+                # This is a raw CloudTrail event
+                cloud_trail_event = event
+                event_id = event.get('eventID', str(uuid.uuid4()))
+                event_name = event.get('eventName', 'Unknown')
+                
+                # Parse the event time
+                event_time_str = event.get('eventTime', '')
+                try:
+                    # Convert ISO format to datetime
+                    event_time = datetime.strptime(event_time_str, '%Y-%m-%dT%H:%M:%SZ')
+                except:
+                    event_time = datetime.now()
+                    
+                # Extract user identity
+                user_identity = event.get('userIdentity', {})
+                identity_type = user_identity.get('type', 'Unknown')
+                
+                # Handle different identity types
+                if identity_type == 'AssumedRole':
+                    # For assumed roles, use a more friendly format
+                    principal_id = user_identity.get('principalId', '')
+                    role_name = principal_id.split(':')[0] if ':' in principal_id else principal_id
+                    session_name = principal_id.split(':')[1] if ':' in principal_id else 'Unknown'
+                    
+                    # Clean up role name
+                    if '/' in role_name:
+                        role_name = role_name.split('/')[-1]
+                    
+                    username = f"{session_name} (role: {role_name})"
+                    
+                    # If there's session context, add more details
+                    if 'sessionContext' in user_identity and 'sessionIssuer' in user_identity['sessionContext']:
+                        issuer = user_identity['sessionContext']['sessionIssuer']
+                        issuer_name = issuer.get('userName', issuer.get('type', 'Unknown'))
+                        if issuer_name != 'Unknown':
+                            username = f"{session_name} (via {issuer_name})"
+                
+                elif identity_type == 'IAMUser':
+                    username = user_identity.get('userName', 'Unknown IAM User')
+                
+                elif identity_type == 'Root':
+                    username = 'Root Account'
+                
+                elif identity_type == 'AWSService':
+                    # For AWS services, use the service name
+                    username = user_identity.get('invokedBy', 'AWS Service')
+                
+                else:
+                    # For other types, use a generic format
+                    username = f"{identity_type}: {user_identity.get('principalId', 'Unknown')}"
+                
+                # Extract IP and user agent
+                source_ip = event.get('sourceIPAddress', 'Unknown')
+                
+                # Make service names more friendly
+                if source_ip.endswith('.amazonaws.com'):
+                    service_name = source_ip.replace('.amazonaws.com', '')
+                    source_ip = f"{service_name.capitalize()} Service"
+                
+                user_agent = event.get('userAgent', 'Unknown')
+                
+                # Make user agent more friendly
+                if user_agent == 'aws-internal/3 aws-sdk-java/1.11.991 Linux/4.9.230-0.1.ac.224.84.332.metal1.x86_64 OpenJDK_64-Bit_Server_VM/25.252-b09 java/1.8.0_252 vendor/Oracle_Corporation':
+                    user_agent = 'AWS Internal Service'
+                elif 'aws-cli' in user_agent:
+                    user_agent = 'AWS CLI'
+                elif 'console.amazonaws.com' in user_agent:
+                    user_agent = 'AWS Console'
+                elif 'aws-sdk' in user_agent:
+                    user_agent = 'AWS SDK'
+                
+                event_source = event.get('eventSource', 'Unknown').replace('.amazonaws.com', '')
+                
+                # Make event source more friendly
+                event_source = event_source.upper() if event_source.isupper() else event_source.capitalize()
+                
+                aws_region = event.get('awsRegion', 'Unknown')
+                
+            # For events from the lookup_events API
+            else:
+                # Extract the CloudTrail event details
+                event_id = event.get('EventId', str(uuid.uuid4()))
+                event_name = event.get('EventName', 'Unknown')
+                event_time = event.get('EventTime', datetime.now())
+                username = event.get('Username', 'Unknown')
+                source_ip = event.get('SourceIpAddress', 'AWS Service')
+                user_agent = event.get('UserAgent', 'Unknown')
+                event_source = event.get('EventSource', 'Unknown').replace('.amazonaws.com', '')
+                event_source = event_source.upper() if event_source.isupper() else event_source.capitalize()
+                aws_region = event.get('Region', 'Unknown')
+                
+                # Parse the CloudTrail event
+                cloud_trail_event = json.loads(event.get('CloudTrailEvent', '{}'))
             
             # Determine risk level based on event characteristics
             risk_level = 'info'
@@ -230,6 +258,7 @@ class AWSIntegration:
                 'PutBucketPolicy', 'PutBucketAcl'
             ]
             
+            # Adjust risk level based on event type
             if event_name in high_risk_events:
                 risk_level = 'high'
             elif event_name in medium_risk_events:
@@ -237,12 +266,51 @@ class AWSIntegration:
             elif 'error' in str(cloud_trail_event).lower() or 'denied' in str(cloud_trail_event).lower():
                 risk_level = 'medium'  # Failed operations might indicate attempted abuse
             
-            # Create a message that summarizes the event
-            message = f"{event_name} performed by {username} from {source_ip} using {user_agent} on {event_source}"
+            # Lower risk for service-initiated actions
+            if 'Service' in username or 'Service' in source_ip:
+                if risk_level == 'high':
+                    risk_level = 'medium'
+                elif risk_level == 'medium':
+                    risk_level = 'low'
+            
+            # Create a user-friendly message
+            # Format the event name to be more readable
+            friendly_event_name = ' '.join([word for word in re.findall('[A-Z][a-z]*', event_name)])
+            if not friendly_event_name:
+                friendly_event_name = event_name
+            
+            # Create a base message
+            message = f"{friendly_event_name} by {username}"
+            
+            # Add location information if available
+            if source_ip != 'Unknown':
+                message += f" from {source_ip}"
+            
+            # Add service information
+            message += f" on {event_source}"
+            
+            # Add region if available
+            if aws_region != 'Unknown':
+                message += f" in {aws_region}"
+            
+            # Extract request parameters for more context
+            request_params = event.get('requestParameters', {})
+            if not request_params and 'requestParameters' in cloud_trail_event:
+                request_params = cloud_trail_event.get('requestParameters', {})
+            
+            # Add specific details based on event type
+            if event_name == 'AssumeRole' and request_params:
+                role_arn = request_params.get('roleArn', '')
+                if role_arn:
+                    # Extract just the role name from the ARN
+                    role_name = role_arn.split('/')[-1] if '/' in role_arn else role_arn.split(':')[-1]
+                    message = f"Assumed role {role_name} by {username}"
+                    if source_ip != 'Unknown':
+                        message += f" from {source_ip}"
             
             # Create the standardized event
             processed_event = {
-                'id': event.get('EventId', ''),
+                'id': event_id,
                 'timestamp': event_time.strftime('%Y-%m-%d %H:%M:%S') if isinstance(event_time, datetime) else str(event_time),
                 'message': message,
                 'source': 'cloudtrail',
@@ -251,6 +319,7 @@ class AWSIntegration:
                 'username': username,
                 'ip': source_ip,
                 'user_agent': user_agent,
+                'region': aws_region,
                 'risk_level': risk_level,
                 'raw_event': cloud_trail_event
             }
@@ -259,8 +328,9 @@ class AWSIntegration:
             
         except Exception as e:
             self.logger.error(f"Error processing CloudTrail event: {str(e)}")
+            traceback.print_exc()
             return {
-                'id': event.get('EventId', ''),
+                'id': event.get('eventID', event.get('EventId', str(uuid.uuid4()))),
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'message': f"Error processing CloudTrail event: {str(e)}",
                 'source': 'cloudtrail',
@@ -859,8 +929,38 @@ class AWSIntegration:
             
             # Process CloudTrail events
             self.logger.info(f"Processing CloudTrail events from {start_time} to {end_time}")
+            
+            # Try to get events from CloudTrail API
             trail_events = self.fetch_cloudtrail_events(start_time, end_time)
             
+            # If no events from API, try to get from CloudTrail directly
+            if not trail_events:
+                self.logger.info("No events from CloudTrail API, trying direct CloudTrail access")
+                # Create CloudTrail client
+                cloudtrail = self.get_client('cloudtrail')
+                
+                # Get trail ARNs
+                trails = cloudtrail.describe_trails().get('trailList', [])
+                
+                for trail in trails:
+                    trail_name = trail.get('Name')
+                    self.logger.info(f"Processing trail: {trail_name}")
+                    
+                    # Get trail status
+                    status = cloudtrail.get_trail_status(Name=trail_name)
+                    
+                    if status.get('IsLogging', False):
+                        self.logger.info(f"Trail {trail_name} is logging")
+                        
+                        # Get recent events
+                        events = cloudtrail.get_event_selectors(TrailName=trail_name)
+                        self.logger.info(f"Trail {trail_name} event selectors: {events}")
+                        
+                        # Process each event
+                        for event in events.get('EventSelectors', []):
+                            self.logger.info(f"Processing event selector: {event}")
+            
+            # Process the events
             for event in trail_events:
                 if callback:
                     callback(event, source='cloudtrail')
@@ -870,4 +970,5 @@ class AWSIntegration:
             
         except Exception as e:
             self.logger.error(f"Error processing security logs: {str(e)}")
+            traceback.print_exc()
             return processed_count 

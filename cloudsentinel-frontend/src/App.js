@@ -489,7 +489,6 @@ function App() {
                 <tr>
                   <th>Time</th>
                   <th>IP Address</th>
-                  <th>User</th>
                   <th>Risk</th>
                   <th>Message</th>
                 </tr>
@@ -499,7 +498,6 @@ function App() {
                   <tr key={result.id}>
                     <td>{result.log_data?.timestamp || 'N/A'}</td>
                     <td>{result.log_data?.ip_address || 'N/A'}</td>
-                    <td>{result.log_data?.user || 'N/A'}</td>
                     <td>
                     <Badge bg={getRiskLevelColor(result.risk_level)}>
                               {result.risk_level.toUpperCase()}

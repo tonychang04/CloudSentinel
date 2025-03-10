@@ -20,6 +20,8 @@ load_dotenv(override=True)
 # Import the AWS integration class
 from aws_integration import AWSIntegration, MockAWSClient
 from ai_analyzer import AILogAnalyzer
+import openai
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -57,7 +59,7 @@ aws = AWSIntegration(
 
 # Initialize the AI Log Analyzer
 ai_analyzer = AILogAnalyzer(
-    model_name=os.environ.get('LLM_MODEL', 'gpt-3.5-turbo'),
+    model_name=os.environ.get('LLM_MODEL', 'gpt-4o-mini'),
     api_key=os.environ.get('OPENAI_API_KEY')
 )
 
@@ -76,14 +78,13 @@ def get_aws_client(service):
     )
 
 # Automated Prevention Actions
-def block_ip_in_security_group(ip_address, security_group_id, description=None):
+def block_ip_with_nacl(ip_address, description=None):
     """
-    Block an IP address by adding a deny rule to a security group.
+    Block an IP address by adding a deny rule to a Network ACL.
     
     Args:
         ip_address (str): IP address to block
-        security_group_id (str): ID of the security group to modify
-        description (str, optional): Description for the security group rule
+        description (str, optional): Description for the NACL rule
         
     Returns:
         dict: Result of the operation
@@ -94,52 +95,262 @@ def block_ip_in_security_group(ip_address, security_group_id, description=None):
     ec2_client = get_aws_client('ec2')
     
     try:
-        # Format IP for security group rule (CIDR notation)
+        # Format IP for NACL rule (CIDR notation)
         ip_cidr = f"{ip_address}/32"
         
-        # Add deny rule to security group
-        response = ec2_client.authorize_security_group_ingress(
-            GroupId=security_group_id,
-            IpPermissions=[
-                {
-                    'IpProtocol': '-1',  # All protocols
-                    'FromPort': -1,      # All ports
-                    'ToPort': -1,        # All ports
-                    'IpRanges': [
+        # Get VPCs
+        vpcs_response = ec2_client.describe_vpcs()
+        
+        if not vpcs_response.get('Vpcs'):
+            return {'success': False, 'message': 'No VPCs found in the account'}
+        
+        # For each VPC, get or create a CloudSentinel NACL
+        results = []
+        
+        for vpc in vpcs_response['Vpcs']:
+            vpc_id = vpc['VpcId']
+            
+            # Look for existing CloudSentinel NACL
+            nacls_response = ec2_client.describe_network_acls(
+                Filters=[
+                    {
+                        'Name': 'vpc-id',
+                        'Values': [vpc_id]
+                    },
+                    {
+                        'Name': 'tag:Name',
+                        'Values': ['CloudSentinel-NACL']
+                    }
+                ]
+            )
+            
+            # If CloudSentinel NACL exists, use it; otherwise create a new one
+            if nacls_response.get('NetworkAcls'):
+                nacl_id = nacls_response['NetworkAcls'][0]['NetworkAclId']
+                logger.info(f"Using existing CloudSentinel NACL {nacl_id} for VPC {vpc_id}")
+            else:
+                # Create a new NACL
+                nacl_response = ec2_client.create_network_acl(
+                    VpcId=vpc_id,
+                    TagSpecifications=[
                         {
-                            'CidrIp': ip_cidr,
-                            'Description': description or f'Blocked by CloudSentinel at {datetime.now().isoformat()}'
+                            'ResourceType': 'network-acl',
+                            'Tags': [
+                                {
+                                    'Key': 'Name',
+                                    'Value': 'CloudSentinel-NACL'
+                                },
+                                {
+                                    'Key': 'CreatedBy',
+                                    'Value': 'CloudSentinel'
+                                }
+                            ]
                         }
                     ]
+                )
+                
+                nacl_id = nacl_response['NetworkAcl']['NetworkAclId']
+                logger.info(f"Created new CloudSentinel NACL {nacl_id} for VPC {vpc_id}")
+                
+                # Associate the NACL with all subnets in the VPC
+                subnets_response = ec2_client.describe_subnets(
+                    Filters=[
+                        {
+                            'Name': 'vpc-id',
+                            'Values': [vpc_id]
+                        }
+                    ]
+                )
+                
+                for subnet in subnets_response.get('Subnets', []):
+                    subnet_id = subnet['SubnetId']
+                    
+                    # Get current association
+                    associations_response = ec2_client.describe_network_acls(
+                        Filters=[
+                            {
+                                'Name': 'association.subnet-id',
+                                'Values': [subnet_id]
+                            }
+                        ]
+                    )
+                    
+                    if associations_response.get('NetworkAcls'):
+                        for association in associations_response['NetworkAcls'][0]['Associations']:
+                            if association['SubnetId'] == subnet_id:
+                                association_id = association['NetworkAclAssociationId']
+                                
+                                # Replace the association
+                                ec2_client.replace_network_acl_association(
+                                    AssociationId=association_id,
+                                    NetworkAclId=nacl_id
+                                )
+                                
+                                logger.info(f"Associated subnet {subnet_id} with CloudSentinel NACL {nacl_id}")
+                                break
+            
+            # Find the next available rule number
+            rule_number = 100
+            entries_response = ec2_client.describe_network_acl_entries(
+                NetworkAclId=nacl_id
+            )
+            
+            existing_rule_numbers = [entry['RuleNumber'] for entry in entries_response.get('NetworkAclEntries', [])]
+            
+            while rule_number in existing_rule_numbers:
+                rule_number += 1
+            
+            # Add deny rule for the IP
+            ec2_client.create_network_acl_entry(
+                NetworkAclId=nacl_id,
+                RuleNumber=rule_number,
+                Protocol='-1',  # All protocols
+                RuleAction='deny',
+                Egress=False,
+                CidrBlock=ip_cidr,
+                PortRange={
+                    'From': 0,
+                    'To': 65535
                 }
-            ]
-        )
+            )
+            
+            logger.info(f"Added deny rule for {ip_cidr} to NACL {nacl_id} with rule number {rule_number}")
+            
+            # Add a tag to the NACL entry for tracking
+            ec2_client.create_tags(
+                Resources=[nacl_id],
+                Tags=[
+                    {
+                        'Key': f'BlockedIP-{ip_address.replace(".", "-")}',
+                        'Value': description or f'Blocked by CloudSentinel at {datetime.now().isoformat()}'
+                    }
+                ]
+            )
+            
+            results.append({
+                'vpc_id': vpc_id,
+                'nacl_id': nacl_id,
+                'rule_number': rule_number,
+                'ip_cidr': ip_cidr
+            })
         
+        # Add to blocked IPs set
         blocked_ips.add(ip_address)
         
         # Add to recent events
         recent_events.append({
             'id': str(uuid.uuid4()),
-            'timestamp': datetime.now().isoformat(),
-            'message': f'IP {ip_address} blocked in security group {security_group_id}',
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'message': f'IP {ip_address} blocked by adding {len(results)} Network ACL rules',
             'ip': ip_address,
             'risk_level': 'blocked',
-            'threats': 'Manual block'
+            'nacl_results': results
         })
         
         return {
             'success': True,
-            'message': f'Successfully blocked IP {ip_address}',
-            'security_group_id': security_group_id,
-            'aws_response': response
+            'message': f'Successfully blocked IP {ip_address} by adding {len(results)} Network ACL rules',
+            'results': results
         }
         
     except Exception as e:
-        logger.error(f"Error blocking IP: {str(e)}")
+        logger.error(f"Error blocking IP with NACL: {str(e)}")
+        traceback.print_exc()
         return {
             'success': False,
-            'message': f'Failed to block IP {ip_address}: {str(e)}',
-            'security_group_id': security_group_id
+            'message': f'Failed to block IP {ip_address}: {str(e)}'
+        }
+
+def unblock_ip_from_nacls(ip_address):
+    """
+    Unblock an IP address by removing deny rules from Network ACLs.
+    
+    Args:
+        ip_address (str): IP address to unblock
+        
+    Returns:
+        dict: Result of the operation
+    """
+    if not ip_address:
+        return {'success': False, 'message': 'No IP address provided'}
+    
+    if ip_address not in blocked_ips:
+        return {'success': True, 'message': f'IP {ip_address} is not blocked'}
+    
+    ec2_client = get_aws_client('ec2')
+    
+    try:
+        # Format IP for NACL rule (CIDR notation)
+        ip_cidr = f"{ip_address}/32"
+        
+        # Find all CloudSentinel NACLs
+        nacls_response = ec2_client.describe_network_acls(
+            Filters=[
+                {
+                    'Name': 'tag:Name',
+                    'Values': ['CloudSentinel-NACL']
+                }
+            ]
+        )
+        
+        if not nacls_response.get('NetworkAcls'):
+            logger.warning("No CloudSentinel NACLs found")
+            return {'success': True, 'message': f'No CloudSentinel NACLs found to unblock IP {ip_address}'}
+        
+        # For each NACL, find and remove rules for this IP
+        results = []
+        
+        for nacl in nacls_response['NetworkAcls']:
+            nacl_id = nacl['NetworkAclId']
+            vpc_id = nacl['VpcId']
+            
+            # Find rules for this IP
+            for entry in nacl.get('Entries', []):
+                if not entry.get('Egress', True) and entry.get('CidrBlock') == ip_cidr and entry.get('RuleAction') == 'deny':
+                    rule_number = entry.get('RuleNumber')
+                    
+                    # Delete the rule
+                    ec2_client.delete_network_acl_entry(
+                        NetworkAclId=nacl_id,
+                        RuleNumber=rule_number,
+                        Egress=False
+                    )
+                    
+                    logger.info(f"Removed deny rule for {ip_cidr} from NACL {nacl_id} with rule number {rule_number}")
+                    
+                    results.append({
+                        'vpc_id': vpc_id,
+                        'nacl_id': nacl_id,
+                        'rule_number': rule_number,
+                        'ip_cidr': ip_cidr
+                    })
+        
+        # Remove from blocked IPs set
+        if ip_address in blocked_ips:
+            blocked_ips.remove(ip_address)
+        
+        # Add to recent events
+        recent_events.append({
+            'id': str(uuid.uuid4()),
+            'timestamp': datetime.now().isoformat(),
+            'message': f'IP {ip_address} unblocked by removing {len(results)} Network ACL rules',
+            'ip': ip_address,
+            'risk_level': 'info',
+            'nacl_results': results
+        })
+        
+        return {
+            'success': True,
+            'message': f'Successfully unblocked IP {ip_address} by removing {len(results)} Network ACL rules',
+            'results': results
+        }
+        
+    except Exception as e:
+        logger.error(f"Error unblocking IP from NACLs: {str(e)}")
+        traceback.print_exc()
+        return {
+            'success': False,
+            'message': f'Failed to unblock IP {ip_address}: {str(e)}'
         }
 
 def process_log_with_ai(log_event):
@@ -352,6 +563,132 @@ def get_dashboard_data():
         traceback.print_exc()
         return jsonify({'error': str(e), 'message': 'Failed to fetch dashboard data'}), 500
 
+@app.route('/api/summary', methods=['GET'])
+def get_security_summary():
+    """API endpoint to get a summary of security events and recommendations."""
+    global all_logs, recent_events, blocked_ips
+    
+    try:
+        # Get time range for analysis (default to last 24 hours)
+        hours = request.args.get('hours', 24, type=int)
+        start_time = datetime.now() - timedelta(hours=hours)
+        
+        # Filter logs for the time period
+        recent_logs = []
+        for log in all_logs:
+            try:
+                log_time = datetime.strptime(log.get('timestamp', ''), '%Y-%m-%d %H:%M:%S')
+                if log_time >= start_time:
+                    recent_logs.append(log)
+            except:
+                # Skip logs with invalid timestamps
+                continue
+        
+        # Count events by risk level
+        risk_counts = {
+            'high': 0,
+            'medium': 0,
+            'low': 0,
+            'info': 0,
+            'blocked': 0
+        }
+        
+        for log in recent_logs:
+            risk_level = log.get('risk_level', 'info').lower()
+            if risk_level in risk_counts:
+                risk_counts[risk_level] += 1
+            else:
+                risk_counts['info'] += 1
+        
+        # Count events by source
+        source_counts = {}
+        for log in recent_logs:
+            source = log.get('source', 'unknown')
+            source_counts[source] = source_counts.get(source, 0) + 1
+        
+        # Find top IPs with suspicious activity
+        ip_risk_scores = {}
+        for log in recent_logs:
+            ip = log.get('ip')
+            if not ip or ip == 'Unknown':
+                continue
+                
+            risk_level = log.get('risk_level', 'info').lower()
+            
+            # Calculate risk score
+            risk_score = 0
+            if risk_level == 'high':
+                risk_score = 10
+            elif risk_level == 'medium':
+                risk_score = 5
+            elif risk_level == 'low':
+                risk_score = 2
+            elif risk_level == 'blocked':
+                risk_score = 15
+                
+            if ip in ip_risk_scores:
+                ip_risk_scores[ip]['score'] += risk_score
+                ip_risk_scores[ip]['events'] += 1
+            else:
+                ip_risk_scores[ip] = {
+                    'score': risk_score,
+                    'events': 1,
+                    'blocked': ip in blocked_ips
+                }
+        
+        # Sort IPs by risk score
+        suspicious_ips = []
+        for ip, data in sorted(ip_risk_scores.items(), key=lambda x: x[1]['score'], reverse=True)[:5]:
+            suspicious_ips.append({
+                'ip': ip,
+                'risk_score': data['score'],
+                'events': data['events'],
+                'blocked': data['blocked']
+            })
+        
+        # Generate recommendations
+        recommendations = []
+        
+        # Add recommendations based on risk counts
+        if risk_counts.get('high', 0) > 0:
+            recommendations.append("Investigate high-risk events immediately")
+        
+        if risk_counts.get('medium', 0) > 5:
+            recommendations.append("Review medium-risk events for potential security issues")
+        
+        # Add recommendations for suspicious IPs
+        unblocked_suspicious_ips = [ip for ip in suspicious_ips if not ip['blocked'] and ip['risk_score'] > 10]
+        if unblocked_suspicious_ips:
+            recommendations.append(f"Consider blocking {len(unblocked_suspicious_ips)} suspicious IPs with high risk scores")
+        
+        # Add general recommendations
+        recommendations.append("Review IAM permissions and ensure least privilege principle is followed")
+        recommendations.append("Enable multi-factor authentication for all IAM users")
+        recommendations.append("Regularly rotate access keys and credentials")
+        
+        # Generate AI summary
+        ai_summary = generate_basic_summary(recent_logs, risk_counts, suspicious_ips)
+        
+        return jsonify({
+            'success': True,
+            'time_range': f"Last {hours} hours",
+            'total_events': len(recent_logs),
+            'risk_counts': risk_counts,
+            'source_counts': source_counts,
+            'suspicious_ips': suspicious_ips,
+            'blocked_ips_count': len(blocked_ips),
+            'ai_summary': ai_summary,
+            'recommendations': recommendations
+        })
+        
+    except Exception as e:
+        logger.error(f"Error generating security summary: {str(e)}")
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'message': f'Error generating security summary: {str(e)}'
+        }), 500
+
 @app.route('/api/logs', methods=['POST'])
 def process_logs():
     """API endpoint to fetch and analyze logs."""
@@ -456,13 +793,8 @@ def process_logs():
 def prevent_threat():
     """API endpoint to take preventive action against a threat."""
     global blocked_ips, recent_events, all_logs
-    
+ 
     try:
-        # Log the raw request data
-        logger.info(f"Prevention API called with data: {request.get_data(as_text=True)}")
-        logger.info(f"Request content type: {request.content_type}")
-        logger.info(f"Request JSON: {request.json if request.is_json else 'Not JSON'}")
-        
         # Check if the request is JSON
         if not request.is_json:
             logger.error("Request is not JSON")
@@ -476,7 +808,16 @@ def prevent_threat():
         ip_address = data.get('ip_address')
         reason = data.get('reason', 'Manual prevention action')
         
-        logger.info(f"Parsed data - action: {action}, IP: {ip_address}, reason: {reason}")
+            
+        if DEMO_MODE:
+            blocked_ips.add(ip_address)
+            return jsonify({
+                'success': True,
+                'message': 'Demo mode: Action not taken'
+            }), 200
+        
+        
+        logger.info(f"Prevention API called - action: {action}, IP: {ip_address}, reason: {reason}")
         
         if not action:
             logger.error("No action specified")
@@ -499,16 +840,13 @@ def prevent_threat():
                     'message': f'IP {ip_address} is already blocked'
                 })
             
-            # Block the IP using AWS integration
-            result = aws.block_ip_in_security_group(
+            # Block the IP using Network ACL
+            result = block_ip_with_nacl(
                 ip_address,
                 description=f"Manually blocked: {reason}"
             )
             
             if result.get('success'):
-                # Add to blocked IPs set
-                blocked_ips.add(ip_address)
-                
                 # Create a log entry for the block
                 block_event = {
                     'id': str(uuid.uuid4()),
@@ -554,10 +892,10 @@ def prevent_threat():
                     'message': f'IP {ip_address} is not blocked'
                 })
             
-            # In demo mode, just remove from the set
-            if DEMO_MODE:
-                blocked_ips.remove(ip_address)
-                
+            # Unblock the IP
+            result = unblock_ip_from_nacls(ip_address)
+            
+            if result.get('success'):
                 # Create a log entry for the unblock
                 unblock_event = {
                     'id': str(uuid.uuid4()),
@@ -575,16 +913,15 @@ def prevent_threat():
                 
                 return jsonify({
                     'success': True,
-                    'message': f'Successfully unblocked IP {ip_address} (demo mode)'
+                    'message': f'Successfully unblocked IP {ip_address}',
+                    'details': result
                 })
             else:
-                # For real AWS, we would need to remove the security group rule
-                # This is a simplified version - in a real implementation, you would
-                # need to find and remove the specific rule for this IP
                 return jsonify({
                     'success': False,
-                    'message': 'Unblocking IPs in AWS mode is not implemented yet'
-                }), 501
+                    'message': f'Failed to unblock IP {ip_address}',
+                    'details': result
+                }), 500
         
         else:
             return jsonify({
@@ -597,9 +934,72 @@ def prevent_threat():
         traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e),
-            'message': 'Failed to execute prevention action'
+            'message': f'Error: {str(e)}'
         }), 500
+
+def generate_basic_summary(logs, risk_counts, suspicious_ips):
+    """
+    Generate a basic summary when AI is not available.
+    
+    Args:
+        logs (list): Recent security logs
+        risk_counts (dict): Counts of events by risk level
+        suspicious_ips (list): List of suspicious IPs
+        
+    Returns:
+        str: Basic summary
+    """
+    high_risk = risk_counts.get('high', 0)
+    medium_risk = risk_counts.get('medium', 0)
+    low_risk = risk_counts.get('low', 0)
+    
+    # Create a more comprehensive basic summary
+    summary = f"Security Summary for the Last 24 Hours\n\n"
+    
+    # Overall assessment
+    if high_risk > 5:
+        summary += "CRITICAL SECURITY SITUATION: Multiple high-risk events detected requiring immediate attention.\n\n"
+    elif high_risk > 0:
+        summary += "WARNING: High-risk security events detected requiring investigation.\n\n"
+    elif medium_risk > 10:
+        summary += "CAUTION: Elevated number of medium-risk events detected.\n\n"
+    else:
+        summary += "NORMAL: Security situation appears stable with no critical issues detected.\n\n"
+    
+    # Event statistics
+    summary += f"Event Statistics:\n"
+    summary += f"- Total security events: {len(logs)}\n"
+    summary += f"- High-risk events: {high_risk}\n"
+    summary += f"- Medium-risk events: {medium_risk}\n"
+    summary += f"- Low-risk events: {low_risk}\n"
+    
+    # Suspicious IP analysis
+    if suspicious_ips:
+        summary += f"Suspicious IP Activity:\n"
+        summary += f"Detected {len(suspicious_ips)} IP addresses with suspicious activity patterns.\n"
+        
+        for i, ip in enumerate(suspicious_ips[:5]):
+            status = "BLOCKED" if ip['blocked'] else "ACTIVE"
+            summary += f"- {ip['ip']} ({status}): Risk score {ip['risk_score']} with {ip['events']} suspicious events\n"
+            if i < 2 and not ip['blocked'] and ip['risk_score'] > 10:
+                summary += f"  RECOMMENDATION: Consider blocking this IP address immediately.\n"
+        
+        summary += "\n"
+    
+    # Key recommendations
+    summary += "Key Security Recommendations:\n"
+    
+    if high_risk > 0:
+        summary += "1. URGENT: Investigate all high-risk events immediately.\n"
+    
+    if len([ip for ip in suspicious_ips if not ip['blocked'] and ip['risk_score'] > 10]) > 0:
+        summary += "2. Block suspicious IP addresses with high risk scores.\n"
+    
+    summary += "3. Review IAM permissions to ensure least privilege principle is followed.\n"
+    summary += "4. Enable multi-factor authentication for all IAM users if not already enabled.\n"
+    summary += "5. Regularly rotate access keys and credentials.\n"
+    
+    return summary
 
 if __name__ == '__main__':
     logger.info("Starting CloudSentinel application")

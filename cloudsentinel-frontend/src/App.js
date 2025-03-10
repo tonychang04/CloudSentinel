@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Container, Row, Col, Card, Table, Badge, Button, Modal, Form, Spinner, Navbar, Nav } from 'react-bootstrap';
+import { Container, Row, Col, Card, Table, Badge, Button, Modal, Form, Spinner, Navbar, Nav, ListGroup, Tab, Tabs } from 'react-bootstrap';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import 'bootstrap-icons/font/bootstrap-icons.css';
 import './App.css';
@@ -85,6 +85,210 @@ const getRiskLevelColor = (riskLevel) => {
   }
 };
 
+// Add this function to fetch summary data
+const fetchSummary = async () => {
+  try {
+    const response = await fetch('/api/summary');
+    if (!response.ok) {
+      throw new Error(`HTTP error! Status: ${response.status}`);
+    }
+    return await response.json();
+  } catch (error) {
+    console.error('Error fetching summary:', error);
+    throw error;
+  }
+};
+
+// Add this component definition before the App function
+const SecuritySummary = ({ onClose, onBlockIP }) => {
+  const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const loadSummary = async () => {
+      try {
+        setLoading(true);
+        const data = await fetchSummary();
+        setSummary(data);
+      } catch (err) {
+        setError('Failed to load security summary');
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadSummary();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="text-center p-5">
+        <Spinner animation="border" role="status">
+          <span className="visually-hidden">Loading...</span>
+        </Spinner>
+        <p className="mt-2">Generating security summary...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="text-center p-5">
+        <i className="bi bi-exclamation-triangle text-danger fs-1"></i>
+        <p className="mt-2">{error}</p>
+        <Button variant="primary" onClick={onClose}>Close</Button>
+      </div>
+    );
+  }
+
+  if (!summary) {
+    return (
+      <div className="text-center p-5">
+        <i className="bi bi-exclamation-triangle text-warning fs-1"></i>
+        <p className="mt-2">No summary data available</p>
+        <Button variant="primary" onClick={onClose}>Close</Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="security-summary">
+      <Card className="mb-4">
+        <Card.Header className="d-flex justify-content-between align-items-center">
+          <h5 className="mb-0">Security Summary</h5>
+          <small className="text-muted">{summary.time_range}</small>
+        </Card.Header>
+        <Card.Body>
+          <Tabs defaultActiveKey="overview" className="mb-3">
+            <Tab eventKey="overview" title="Overview">
+              <div className="ai-summary mb-4">
+                <h6>Security Analysis</h6>
+                <div className="p-3 bg-light rounded">
+                  {summary.ai_summary.split('\n').map((paragraph, idx) => (
+                    <p key={idx}>{paragraph}</p>
+                  ))}
+                </div>
+              </div>
+              
+              <div className="row mb-4">
+                <div className="col-md-6">
+                  <h6>Event Statistics</h6>
+                  <ListGroup>
+                    <ListGroup.Item className="d-flex justify-content-between align-items-center">
+                      Total Events
+                      <Badge bg="secondary" pill>{summary.total_events}</Badge>
+                    </ListGroup.Item>
+                    <ListGroup.Item className="d-flex justify-content-between align-items-center">
+                      High Risk Events
+                      <Badge bg="danger" pill>{summary.risk_counts.high}</Badge>
+                    </ListGroup.Item>
+                    <ListGroup.Item className="d-flex justify-content-between align-items-center">
+                      Medium Risk Events
+                      <Badge bg="warning" text="dark" pill>{summary.risk_counts.medium}</Badge>
+                    </ListGroup.Item>
+                    <ListGroup.Item className="d-flex justify-content-between align-items-center">
+                      Low Risk Events
+                      <Badge bg="info" pill>{summary.risk_counts.low}</Badge>
+                    </ListGroup.Item>
+                  </ListGroup>
+                </div>
+                
+                <div className="col-md-6">
+                  <h6>Recommendations</h6>
+                  <ListGroup>
+                    {summary.recommendations.map((rec, idx) => (
+                      <ListGroup.Item key={idx}>
+                        <i className="bi bi-check-circle-fill text-success me-2"></i>
+                        {rec}
+                      </ListGroup.Item>
+                    ))}
+                  </ListGroup>
+                </div>
+              </div>
+            </Tab>
+            
+            <Tab eventKey="suspicious" title="Suspicious IPs">
+              <h6>Top Suspicious IP Addresses</h6>
+              {summary.suspicious_ips && summary.suspicious_ips.length > 0 ? (
+                <Table hover responsive>
+                  <thead>
+                    <tr>
+                      <th>IP Address</th>
+                      <th>Risk Score</th>
+                      <th>Events</th>
+                      <th>Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.suspicious_ips.map((ip) => (
+                      <tr key={ip.ip}>
+                        <td>{ip.ip}</td>
+                        <td>
+                          <Badge 
+                            bg={ip.risk_score > 20 ? 'danger' : ip.risk_score > 10 ? 'warning' : 'info'}
+                          >
+                            {ip.risk_score}
+                          </Badge>
+                        </td>
+                        <td>{ip.events}</td>
+                        <td>
+                          {ip.blocked ? (
+                            <Badge bg="dark">Blocked</Badge>
+                          ) : (
+                            <Badge bg="secondary">Active</Badge>
+                          )}
+                        </td>
+                        <td>
+                          {!ip.blocked && (
+                            <Button 
+                              variant="outline-danger" 
+                              size="sm"
+                              onClick={() => {
+                                onBlockIP(ip.ip, `Suspicious activity with risk score ${ip.risk_score}`);
+                                onClose();
+                              }}
+                            >
+                              Block
+                            </Button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </Table>
+              ) : (
+                <p className="text-center">No suspicious IPs detected</p>
+              )}
+            </Tab>
+            
+            <Tab eventKey="sources" title="Event Sources">
+              <h6>Events by Source</h6>
+              {summary.source_counts && Object.keys(summary.source_counts).length > 0 ? (
+                <ListGroup>
+                  {Object.entries(summary.source_counts).map(([source, count]) => (
+                    <ListGroup.Item key={source} className="d-flex justify-content-between align-items-center">
+                      {source.charAt(0).toUpperCase() + source.slice(1)}
+                      <Badge bg="info" pill>{count}</Badge>
+                    </ListGroup.Item>
+                  ))}
+                </ListGroup>
+              ) : (
+                <p className="text-center">No source data available</p>
+              )}
+            </Tab>
+          </Tabs>
+        </Card.Body>
+        <Card.Footer className="text-end">
+          <Button variant="secondary" onClick={onClose}>Close</Button>
+        </Card.Footer>
+      </Card>
+    </div>
+  );
+};
+
 function App() {
   // Separate loading states for different operations
   const [dashboardLoading, setDashboardLoading] = useState(false);
@@ -110,6 +314,9 @@ function App() {
 
   // Add state variables for auto-refresh intervals
   const [logsRefreshInterval, setLogsRefreshInterval] = useState(null);
+
+  // Add this state to your App component's useState declarations
+  const [showSummaryModal, setShowSummaryModal] = useState(false);
 
   // Format date
   const formatDate = (dateString) => {
@@ -270,6 +477,9 @@ function App() {
               <Nav.Link active>Dashboard</Nav.Link>
               <Nav.Link onClick={handleOpenLogsModal}>Logs</Nav.Link>
               <Nav.Link onClick={() => setShowBlockModal(true)}>Block IP</Nav.Link>
+              <Nav.Link onClick={() => setShowSummaryModal(true)}>
+              Security Summary
+              </Nav.Link>
             </Nav>
             <Navbar.Text>
               <i className="bi bi-clock"></i> Last updated: {lastUpdated}
@@ -519,6 +729,27 @@ function App() {
             Close
           </Button>
         </Modal.Footer>
+      </Modal>
+
+      {/* Security Summary Modal */}
+      <Modal 
+        show={showSummaryModal} 
+        onHide={() => setShowSummaryModal(false)} 
+        size="lg"
+        backdrop="static"
+      >
+        <Modal.Header closeButton>
+          <Modal.Title>
+            <i className="bi bi-shield-check me-2"></i>
+            Security Summary
+          </Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <SecuritySummary 
+            onClose={() => setShowSummaryModal(false)} 
+            onBlockIP={handleBlockIP}
+          />
+        </Modal.Body>
       </Modal>
     </div>
   );

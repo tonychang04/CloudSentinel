@@ -8,7 +8,7 @@ from datetime import datetime
 class AILogAnalyzer:
     """Class for analyzing logs using AI/LLM capabilities."""
     
-    def __init__(self, model_name="gpt-3.5-turbo", api_key=None):
+    def __init__(self, model_name="gpt-4o-mini", api_key=None):
         """
         Initialize the AI Log Analyzer.
         

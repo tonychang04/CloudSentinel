@@ -7,16 +7,7 @@ CloudSentinel is an automated log analysis and threat prevention system for AWS 
 - Automated CloudWatch log fetching and analysis
 - Threat detection using pattern matching and keyword analysis
 - Automated prevention actions (e.g., blocking IPs in security groups)
-- RESTful API for integration with other systems
-- Containerized deployment with Docker
 
-## Prerequisites
-
-- AWS account with appropriate permissions
-- Docker (for containerized deployment)
-- AWS credentials with the following permissions:
-  - CloudWatch Logs: `logs:FilterLogEvents`, `logs:GetLogEvents`
-  - EC2: Permissions to modify Security Groups
 
 ## Environment Setup
 

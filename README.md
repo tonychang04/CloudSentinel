@@ -27,6 +27,7 @@ CloudSentinel is an automated log analysis and threat prevention system for AWS 
      ```
      source venv/bin/activate
      ```
+     
 
 3. Create a `.env` file in the project root directory with the following content:
    ```

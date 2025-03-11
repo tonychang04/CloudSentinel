@@ -89,6 +89,8 @@ def block_ip_with_nacl(ip_address, description=None):
     Returns:
         dict: Result of the operation
     """
+    global blocked_ips
+    
     if not ip_address:
         return {'success': False, 'message': 'No IP address provided'}
     
@@ -191,14 +193,20 @@ def block_ip_with_nacl(ip_address, description=None):
             
             # Find the next available rule number
             rule_number = 100
-            entries_response = ec2_client.describe_network_acl_entries(
-                NetworkAclId=nacl_id
+            
+            # Get existing entries directly from the NACL description
+            nacl_details = ec2_client.describe_network_acls(
+                NetworkAclIds=[nacl_id]
             )
             
-            existing_rule_numbers = [entry['RuleNumber'] for entry in entries_response.get('NetworkAclEntries', [])]
-            
-            while rule_number in existing_rule_numbers:
-                rule_number += 1
+            if nacl_details.get('NetworkAcls') and len(nacl_details['NetworkAcls']) > 0:
+                existing_entries = nacl_details['NetworkAcls'][0].get('Entries', [])
+                existing_rule_numbers = [entry['RuleNumber'] for entry in existing_entries 
+                                        if not entry.get('Egress', True)]  # Only inbound rules
+                
+                # Find the next available rule number
+                while rule_number in existing_rule_numbers:
+                    rule_number += 1
             
             # Add deny rule for the IP
             ec2_client.create_network_acl_entry(
@@ -236,16 +244,6 @@ def block_ip_with_nacl(ip_address, description=None):
         
         # Add to blocked IPs set
         blocked_ips.add(ip_address)
-        
-        # Add to recent events
-        recent_events.append({
-            'id': str(uuid.uuid4()),
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'message': f'IP {ip_address} blocked by adding {len(results)} Network ACL rules',
-            'ip': ip_address,
-            'risk_level': 'blocked',
-            'nacl_results': results
-        })
         
         return {
             'success': True,

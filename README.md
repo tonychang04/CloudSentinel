@@ -2,7 +2,7 @@
 
 CloudSentinel is an automated log analysis and threat prevention system for AWS environments. It fetches logs from CloudWatch, analyzes them for potential security threats, and can automatically take preventive actions such as blocking suspicious IP addresses.
 
-<img src="demo.png" alt="CloudSentinel Dashboard" width="600">
+<img src="demo.png" alt="CloudSentinel Dashboard" width="800">
 
 ## Features
 
